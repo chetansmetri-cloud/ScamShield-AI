@@ -48,6 +48,7 @@ RISK_COLORS = {
     "Some concerns": "#A9BAFF",
     "Suspicious": "#2457FF",
     "High risk indicators": "#101828",
+    "Insufficient evidence": "#667085",
 }
 
 st.set_page_config(
@@ -203,6 +204,7 @@ def render_sidebar() -> str:
         st.sidebar.caption(f"Signed in as {user.get('display_name', user.get('email', 'Account'))}")
         if st.sidebar.button("Sign out", width="stretch"):
             api_call("POST", "/api/auth/logout")
+            clear_active_report()
             st.session_state.pop("auth_token", None)
             st.session_state.pop("account", None)
             st.session_state.pop("main_navigation", None)
@@ -298,6 +300,19 @@ def render_risk_gauge(report: dict[str, Any]) -> None:
     score = int(report.get("risk_score", 0))
     category = str(report.get("risk_category", ""))
     color = risk_color(category)
+    insufficient_evidence = (
+        report.get("risk_assessment_status") == "insufficient_evidence"
+    )
+    gauge_steps = (
+        [{"range": [0, 100], "color": "rgba(102,112,133,.10)"}]
+        if insufficient_evidence
+        else [
+            {"range": [0, 25], "color": "rgba(199,240,0,.24)"},
+            {"range": [25, 50], "color": "rgba(169,186,255,.28)"},
+            {"range": [50, 75], "color": "rgba(36,87,255,.12)"},
+            {"range": [75, 100], "color": "rgba(16,24,40,.08)"},
+        ]
+    )
     figure = go.Figure(
         go.Indicator(
             mode="gauge+number",
@@ -309,12 +324,7 @@ def render_risk_gauge(report: dict[str, Any]) -> None:
                 "bar": {"color": color, "thickness": 0.22},
                 "bgcolor": "rgba(0,0,0,0)",
                 "borderwidth": 0,
-                "steps": [
-                    {"range": [0, 25], "color": "rgba(199,240,0,.24)"},
-                    {"range": [25, 50], "color": "rgba(169,186,255,.28)"},
-                    {"range": [50, 75], "color": "rgba(36,87,255,.12)"},
-                    {"range": [75, 100], "color": "rgba(16,24,40,.08)"},
-                ],
+                "steps": gauge_steps,
                 "threshold": {"line": {"color": color, "width": 3}, "thickness": 0.82, "value": score},
             },
         )
@@ -325,6 +335,11 @@ def render_risk_gauge(report: dict[str, Any]) -> None:
         f'<div class="risk-label" style="--risk-accent:{color}">{html.escape(category)}</div>',
         unsafe_allow_html=True,
     )
+    if insufficient_evidence:
+        st.caption(
+            "The score counts detected warning signals, not proof of safety. "
+            "Available evidence does not support a low-risk conclusion."
+        )
 
 
 def render_evidence_card(item: dict[str, Any], index: int) -> None:
@@ -334,19 +349,28 @@ def render_evidence_card(item: dict[str, Any], index: int) -> None:
     title = html.escape(str(item.get("title") or item.get("source_type") or "Evidence source"))
     excerpt = html.escape(str(item.get("excerpt") or "No excerpt returned."))
     source_type = html.escape(str(item.get("source_type") or "source").replace("_", " "))
+    providers = item.get("providers")
+    provider_label = (
+        ", ".join(str(value) for value in providers if isinstance(value, str))
+        if isinstance(providers, list)
+        else str(item.get("provider") or "Provider not recorded")
+    )
+    provider = html.escape(provider_label)
     relevance = item.get("relevance")
     evidence_status = ""
     if relevance == "unrelated_not_scored":
         evidence_status = '<span class="evidence-status">Unrelated · not scored</span>'
     elif relevance == "redirected_to_other_domain_not_scored":
         evidence_status = '<span class="evidence-status">Different final domain · not scored</span>'
+    elif item.get("redirect_detected"):
+        evidence_status = '<span class="evidence-status">Redirected · listing details reviewed</span>'
     if url.startswith(("https://", "http://")):
         link = f'<a class="source-link" href="{safe_url}" target="_blank" rel="noopener noreferrer">Open source ↗</a>'
     else:
         link = ""
     st.markdown(
         f'<div class="evidence-card"><div class="evidence-index">{index:02d}</div>'
-        f'<div class="evidence-content"><div class="evidence-meta">{source_type} '
+        f'<div class="evidence-content"><div class="evidence-meta">{source_type} · {provider} '
         f'<span>·</span> {domain} {evidence_status}</div><h4>{title}</h4><p>{excerpt}</p>{link}</div></div>',
         unsafe_allow_html=True,
     )
@@ -366,26 +390,78 @@ def render_job_verification(report: dict[str, Any]) -> None:
         "Job & internship verification",
         "Company-level search is not proof of a specific job listing.",
     )
+
+    status_labels = {
+        "page_details_match_not_officially_verified": (
+            "Partially verified — details match; source not authenticated"
+        ),
+        "page_details_mismatch": "Mismatch found",
+        "page_fetched_details_insufficient": "Partially verified — details incomplete",
+        "page_unavailable_or_access_limited": "Unable to verify — page unavailable",
+        "fetch_failed": "Unable to verify — Fetch failed",
+        "requested_url_not_confirmed": "Unable to verify — requested URL not confirmed",
+        "redirected_to_different_domain": "Mismatch found — unrecognized redirect",
+        "not_checked_no_offer_url": "Not checked — no offer URL",
+        "company_name_found_on_page": "Company name found; ownership unverified",
+        "company_name_not_found_on_page": "Mismatch found — company not identified",
+        "brand_in_unverified_subdomain": "Warning — brand in unverified subdomain",
+        "recognized_third_party_recruitment_platform": (
+            "Recognized recruitment platform; employer unverified"
+        ),
+        "company_name_in_unverified_subdomain": (
+            "Company name appears in an unverified subdomain"
+        ),
+        "employer_domain_unverified": "Employer domain not independently verified",
+        "unrecognized_redirect_domain": "Unrecognized redirect domain",
+    }
+
+    def display_status(value: Any) -> str:
+        status = str(value or "not verified")
+        return status_labels.get(status, status.replace("_", " ").capitalize())
+
     with st.container(border=True):
         statuses = (
-            ("Company name on fetched page", verification.get("company_status", "not verified")),
-            ("Offer URL domain", verification.get("offer_domain_status", "not verified")),
-            ("Exact listing", verification.get("exact_listing_status", "not checked")),
-            ("Official careers domain", verification.get("official_careers_domain_status", "not verified")),
+            ("Submitted company", verification.get("submitted_company", "not available")),
+            ("Company name on fetched page", display_status(verification.get("company_status"))),
+            ("Offer URL domain", display_status(verification.get("offer_domain_status"))),
+            ("Exact listing", display_status(verification.get("exact_listing_status"))),
+            ("Hosting status", display_status(verification.get("hosting_status"))),
+            ("Official careers domain", display_status(verification.get("official_careers_domain_status"))),
         )
-        status_columns = st.columns(len(statuses))
-        for column, (label, value) in zip(status_columns, statuses):
-            with column:
-                st.markdown(f"**{label}**")
-                st.write(str(value).replace("_", " ").capitalize())
+        for start in range(0, len(statuses), 3):
+            status_columns = st.columns(3)
+            for column, (label, value) in zip(
+                status_columns,
+                statuses[start : start + 3],
+            ):
+                with column:
+                    st.markdown(f"**{label}**")
+                    st.write(str(value))
 
         recruiter = verification.get("recruiter")
         if isinstance(recruiter, dict):
             st.markdown("**Recruiter verification**")
-            st.write(str(recruiter.get("status", "not verified")).replace("_", " ").capitalize())
+            st.write(display_status(recruiter.get("status", "not verified")))
             st.caption(str(recruiter.get("explanation", "")))
             if recruiter.get("email_domain"):
                 st.caption(f"Submitted recruiter email domain: {recruiter['email_domain']}")
+
+        if verification.get("recruitment_platform"):
+            st.caption(
+                f"Recognized third-party recruitment platform: "
+                f"{verification['recruitment_platform']}. Platform hosting does not authenticate the employer."
+            )
+
+        providers = verification.get("research_providers")
+        if isinstance(providers, dict):
+            st.caption(
+                "Provider attribution: "
+                + ", ".join(
+                    f"{details.get('provider', name)} ({display_status(details.get('status'))})"
+                    for name, details in providers.items()
+                    if isinstance(details, dict)
+                )
+            )
 
         for label, field in (
             ("Submitted offer URL", "submitted_offer_url"),
@@ -402,8 +478,18 @@ def render_job_verification(report: dict[str, Any]) -> None:
             st.markdown(
                 f"**Fetched page title:** {html.escape(str(verification['page_title']))}"
             )
+        if verification.get("job_title"):
+            st.markdown(
+                f"**Job title found:** {html.escape(str(verification['job_title']))}"
+            )
         if verification.get("job_id"):
-            st.markdown(f"**Job ID found:** `{html.escape(str(verification['job_id']))}`")
+            st.markdown(
+                f"**Fetched job ID:** `{html.escape(str(verification['job_id']))}`"
+            )
+        if verification.get("submitted_job_id"):
+            st.markdown(
+                f"**Submitted job ID:** `{html.escape(str(verification['submitted_job_id']))}`"
+            )
         for label, field in (
             ("Company name match", "company_name_match"),
             ("Role details match", "role_details_match"),
@@ -411,13 +497,20 @@ def render_job_verification(report: dict[str, Any]) -> None:
         ):
             matched = verification.get(field)
             result = (
-                "Not available"
+                "Not supplied or unavailable"
                 if matched is None
                 else "Match found" if matched else "No match"
             )
             st.markdown(f"**{label}:** {result}")
+        if verification.get("application_details"):
+            st.markdown("**Application details found**")
+            st.write(str(verification["application_details"]))
+        if verification.get("application_url"):
+            st.markdown(
+                f"**Application URL:** {html.escape(str(verification['application_url']))}"
+            )
         if verification.get("available_description"):
-            st.markdown("**Fetched page text available**")
+            st.markdown("**Fetched job description or page text**")
             st.text(str(verification["available_description"]))
         st.info(str(verification.get("explanation", "Listing authenticity was not independently verified.")))
 
@@ -452,7 +545,10 @@ def render_report(report: dict[str, Any]) -> None:
     if report.get("live_research") == "partial":
         st.warning("Research was incomplete. This is a partial report; do not treat it as a completed live investigation.")
     elif report.get("live_research") == "completed":
-        st.success("Live investigation completed with usable evidence.")
+        if report.get("investigation_type") == "job":
+            st.info("Provider research completed. Review the separate listing and identity statuses; this does not authenticate the offer.")
+        else:
+            st.success("Live investigation completed with usable evidence.")
     elif report.get("live_research") in {"not_requested", "not_applicable"}:
         st.info("This analysis did not require live research. The result is rule-based.")
 
@@ -594,7 +690,7 @@ def render_report(report: dict[str, Any]) -> None:
         for item in report.get("recommended_next_steps", []):
             st.markdown(f'<div class="action-row"><span>→</span>{html.escape(str(item))}</div>', unsafe_allow_html=True)
     with right:
-        render_section_title("Information gaps")
+        render_section_title("Unknown or unverified information")
         missing = report.get("missing_information", [])
         if missing:
             for item in missing:
@@ -685,7 +781,7 @@ def render_overview() -> None:
     with metric_columns[1]:
         render_metric("Elevated signals", f"{high_count:,}", "Suspicious + high category", "02", "#101828")
     with metric_columns[2]:
-        render_metric("Risk bands", f"{len(scored_categories)}/4", "Scored categories represented", "03", "#C7F000")
+        render_metric("Risk classes", f"{len(scored_categories)}/5", "Indicator classes represented", "03", "#C7F000")
     with metric_columns[3]:
         render_metric("Service status", "Online", "FastAPI · SQLite", "04", "#2457FF")
 
@@ -1794,6 +1890,7 @@ def render_auth_portal() -> None:
                     payload["display_name"] = display_name
                 result = api_call("POST", route, json=payload)
                 if result:
+                    clear_active_report()
                     st.session_state["auth_token"] = result["access_token"]
                     st.session_state["account"] = result["user"]
                     queued_url = st.session_state.pop("queued_url", None)

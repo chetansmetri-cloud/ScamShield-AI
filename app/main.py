@@ -20,6 +20,11 @@ from fastapi.responses import JSONResponse, Response
 
 from app.analyzers.rules import analyze_text, classify_score
 from app.database import InvestigationStore
+from app.evidence import (
+    canonicalize_url,
+    company_evidence_is_relevant,
+    deduplicate_url_items,
+)
 from app.investigations import investigate_job, investigate_website
 from app.reporting import build_pdf_report
 
@@ -221,6 +226,16 @@ async def tinyfish_request(
         raise HTTPException(status_code=502, detail="Unable to reach TinyFish.") from exc
 
     if not response.is_success:
+        if response.status_code == 429:
+            logger.warning(
+                "provider=TinyFish operation=%s request_status=rate_limited response_status=429 duration_ms=%d result_count=0",
+                operation,
+                round((time.perf_counter() - started_at) * 1000),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="TinyFish is rate-limited. Retry after a short delay.",
+            )
         logger.warning(
             "provider=TinyFish operation=%s request_status=failed response_status=%d duration_ms=%d result_count=0",
             operation,
@@ -252,8 +267,18 @@ async def tinyfish_request(
         )
         raise HTTPException(status_code=502, detail="TinyFish returned an invalid response.")
     results = payload.get("results")
-    result_count = len(results) if isinstance(results, list) else 0
     errors = payload.get("errors")
+    if not isinstance(results, list) and not (
+        endpoint == FETCH_API_URL and isinstance(errors, list)
+    ):
+        logger.warning(
+            "provider=TinyFish operation=%s request_status=invalid_response response_status=%d duration_ms=%d result_count=0",
+            operation,
+            response.status_code,
+            round((time.perf_counter() - started_at) * 1000),
+        )
+        raise HTTPException(status_code=502, detail="TinyFish returned an invalid response.")
+    result_count = len(results) if isinstance(results, list) else 0
     error_count = len(errors) if isinstance(errors, list) else 0
     logger.info(
         "provider=TinyFish operation=%s request_status=completed response_status=%d duration_ms=%d result_count=%d provider_error_count=%d",
@@ -299,14 +324,6 @@ def _save_investigation(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _admin_emails() -> set[str]:
-    return {
-        email.strip().lower()
-        for email in os.getenv("SCAMSHIELD_ADMIN_EMAILS", "").split(",")
-        if email.strip()
-    }
-
-
 def get_current_user(authorization: str | None = Header(default=None)) -> dict[str, str]:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
@@ -344,7 +361,6 @@ async def register(request: RegisterRequest) -> dict[str, Any]:
             request.email,
             request.display_name,
             request.password,
-            admin_emails=_admin_emails(),
         )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="An account with that email already exists.") from exc
@@ -724,39 +740,77 @@ async def payment_analysis(
     evidence: list[dict[str, Any]] = []
     sources: list[str] = []
     live_research = "not_requested"
-    if request.merchant_name and request.merchant_name.strip():
+    research_status = "not_requested"
+    merchant_name = (request.merchant_name or "").strip()
+    if merchant_name:
         search_payload = await search_web(
-            f'"{request.merchant_name.strip()}" official company complaints scam'
+            f'"{merchant_name}" official company complaints scam'
         )
         results = search_payload.get("results", [])
+        warning_results: list[dict[str, str]] = []
         if isinstance(results, list):
             for item in results:
                 if not isinstance(item, dict) or not isinstance(item.get("url"), str):
                     continue
                 url = item["url"]
-                title = str(item.get("title", ""))
-                snippet = str(item.get("snippet", ""))
-                evidence.append(
-                    {
-                        "title": title,
-                        "url": url,
-                        "excerpt": snippet,
-                        "source_type": "search_result",
-                    }
+                if canonicalize_url(url) is None:
+                    continue
+                title = str(item.get("title", ""))[:300]
+                snippet = str(item.get("snippet", ""))[:1200]
+                related = company_evidence_is_relevant(
+                    merchant_name,
+                    title=title,
+                    snippet=snippet,
+                    source_url=url,
+                    offer_url=None,
                 )
-                sources.append(url)
-                if re.search(r"\b(scam|fraud|complaint|warning)\b", f"{title} {snippet}", re.I):
-                    analysis["indicators"].append(
-                        {
-                            "name": "Public payment-related warning or allegation",
-                            "explanation": "A search result contains warning-related language; it does not establish fraud.",
-                            "evidence": f"{title} {snippet}"[:500],
-                            "source": url,
-                            "score_contribution": 8,
-                            "classification": "public_allegation",
-                            "severity": "low",
-                        }
+                evidence.append({
+                    "title": title,
+                    "url": url,
+                    "excerpt": snippet,
+                    "source_type": "search_result",
+                    "provider": "TinyFish Search",
+                    "relevance": "merchant_related" if related else "unrelated_not_scored",
+                })
+                if related and re.search(
+                    r"\b(scam|fraud|complaint|warning)\b",
+                    f"{title} {snippet}",
+                    re.I,
+                ):
+                    warning_results.append(
+                        {"title": title, "snippet": snippet, "url": url}
                     )
+
+        evidence = deduplicate_url_items(
+            sorted(
+                evidence,
+                key=lambda entry: entry.get("relevance") != "merchant_related",
+            )
+        )
+        evidence = [
+            {key: value for key, value in item.items() if key != "canonical_url"}
+            for item in evidence
+        ]
+        sources = list(dict.fromkeys(
+            str(item["url"]) for item in evidence if item.get("url")
+        ))
+        if warning_results:
+            supporting_results = warning_results[:3]
+            supporting_text = " | ".join(
+                f'{item["title"]}: {item["snippet"]}'
+                for item in supporting_results
+            )[:500]
+            analysis["indicators"].append(
+                {
+                    "name": "Public payment-related warning or allegation",
+                    "explanation": "Merchant-related search results contain warning language; this is an allegation, not proof of fraud. Duplicate and additional results do not add more points.",
+                    "evidence": supporting_text,
+                    "source": supporting_results[0]["url"],
+                    "score_contribution": 8,
+                    "classification": "public_allegation",
+                    "severity": "low",
+                }
+            )
         score = min(
             100,
             sum(item["score_contribution"] for item in analysis["indicators"]),
@@ -770,16 +824,27 @@ async def payment_analysis(
             f"Score is the sum of matched rule and supported allegation contributions ({total}), "
             "capped at 100. No points are added for missing information."
         )
-        live_research = "completed" if evidence else "partial"
+        live_research = "completed"
+        research_status = "completed"
+        if not any(item.get("relevance") == "merchant_related" for item in evidence):
+            analysis["missing_information"].append(
+                "Search returned no merchant-related public results."
+            )
     result = {
         **analysis,
         "id": str(uuid.uuid4()),
         "investigation_type": "payment",
-        "target": "Payment request",
+        "target": f"Payment request: {merchant_name}" if merchant_name else "Payment request",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "evidence": evidence,
-        "sources": sources,
+        "sources": list(dict.fromkeys(sources)),
         "live_research": live_research,
+        "research_providers": {
+            "search": {
+                "provider": "TinyFish Search",
+                "status": research_status,
+            }
+        },
     }
     result["_owner_id"] = user["id"]
     return _save_investigation(result)

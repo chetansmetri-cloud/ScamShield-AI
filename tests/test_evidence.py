@@ -229,11 +229,13 @@ class EvidenceNormalizationTests(unittest.TestCase):
                 {
                     "url": "https://example.com/?utm_source=search#top",
                     "source_type": "search_result",
+                    "provider": "TinyFish Search",
                     "excerpt": "Search snippet",
                 },
                 {
                     "url": "https://example.com/",
                     "source_type": "fetched_page",
+                    "provider": "TinyFish Fetch",
                     "excerpt": "Fetched content",
                 },
             ]
@@ -241,6 +243,7 @@ class EvidenceNormalizationTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["source_type"], "search_result_and_fetched_page")
         self.assertEqual(items[0]["search_excerpt"], "Search snippet")
+        self.assertEqual(items[0]["providers"], ["TinyFish Search", "TinyFish Fetch"])
         self.assertEqual(
             deduplicate_urls(
                 [

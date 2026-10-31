@@ -28,7 +28,7 @@ RULES: tuple[tuple[str, str, int, str], ...] = (
     ),
     (
         "Sensitive identity or banking data request",
-        r"\b(bank account details|banking information|card details|social security number|national identity number|passport number|aadhaar number|send (?:your )?(?:id|identity documents|bank details))\b",
+        r"\b(bank account details|banking information|bank details|card details|social security number|national identity number|passport number|aadhaar(?: number)?|pan(?: card| number)?|send (?:your )?(?:id|identity documents|bank details))\b",
         20,
         "Requests for sensitive identity or banking information before independently verified hiring should be treated cautiously.",
     ),
@@ -52,9 +52,18 @@ RULES: tuple[tuple[str, str, int, str], ...] = (
     ),
     (
         "Unusual payment method",
-        r"\b(gift card|crypto(?:currency)?|wire transfer|upi|payment wallet)\b",
+        r"\b(gift card|crypto(?:currency)?|wire transfer|bank transfer|upi|payment wallet)\b",
         12,
         "Irreversible or unusual payment methods deserve extra verification.",
+    ),
+)
+
+JOB_RULES: tuple[tuple[str, str, int, str], ...] = (
+    (
+        "Unusually high or guaranteed salary promise",
+        r"\b(?:unrealistic|unusually high|guaranteed|assured)\s+(?:salary|pay|stipend)\b",
+        12,
+        "Unusually high or guaranteed compensation claims should be checked against the employer's published role and pay range.",
     ),
 )
 
@@ -71,7 +80,8 @@ def classify_score(score: int) -> str:
 
 def analyze_text(text: str, *, kind: str) -> dict[str, Any]:
     indicators: list[dict[str, Any]] = []
-    for name, pattern, points, explanation in RULES:
+    rules = RULES + (JOB_RULES if kind == "job" else ())
+    for name, pattern, points, explanation in rules:
         match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
             indicators.append(
@@ -82,6 +92,29 @@ def analyze_text(text: str, *, kind: str) -> dict[str, Any]:
                     "score_contribution": points,
                     "classification": "inference",
                     "severity": "high" if points >= 20 else "medium",
+                }
+            )
+    if kind == "job":
+        bypass_match = re.search(
+            r"\b(?:no|without|skip(?:ping)?)\s+(?:a\s+)?"
+            r"(?:job\s+)?(?:interview|selection process|assessment)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        promise_match = re.search(
+            r"\b(?:guaranteed|assured|instant|direct joining|no experience required)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if bypass_match and promise_match:
+            indicators.append(
+                {
+                    "name": "Hiring process bypassed despite unusual promises",
+                    "explanation": "A stated lack of interview or selection steps is paired with an unusually strong hiring promise; confirm the process directly with the employer.",
+                    "evidence": f"{bypass_match.group(0)}; {promise_match.group(0)}",
+                    "score_contribution": 12,
+                    "classification": "inference",
+                    "severity": "medium",
                 }
             )
 

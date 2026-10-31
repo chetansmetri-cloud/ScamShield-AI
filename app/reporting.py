@@ -99,6 +99,53 @@ def build_pdf_report(report: dict[str, Any]) -> bytes:
         ]
     )
 
+    job_verification = report.get("job_verification")
+    if isinstance(job_verification, dict):
+        story.append(paragraph("Job & internship verification", "Section"))
+        for label, key in (
+            ("Submitted company", "submitted_company"),
+            ("Submitted offer URL", "submitted_offer_url"),
+            ("Final fetched URL", "final_fetched_url"),
+            ("Company on page", "page_company"),
+            ("Page title", "page_title"),
+            ("Job title", "job_title"),
+            ("Submitted job ID", "submitted_job_id"),
+            ("Fetched job ID", "job_id"),
+            ("Company match", "company_name_match"),
+            ("Role match", "role_details_match"),
+            ("Job ID match", "job_id_match"),
+            ("Company status", "company_status"),
+            ("Listing status", "exact_listing_status"),
+            ("Hosting status", "hosting_status"),
+            ("Recruitment platform", "recruitment_platform"),
+            ("Official careers domain", "official_careers_domain_status"),
+            ("Application details", "application_details"),
+            ("Application URL", "application_url"),
+            ("Explanation", "explanation"),
+        ):
+            story.append(paragraph(f"{label}: {job_verification.get(key)}", "SmallBody"))
+        recruiter = job_verification.get("recruiter")
+        if isinstance(recruiter, dict):
+            story.append(
+                paragraph(
+                    f"Recruiter status: {recruiter.get('status')}; "
+                    f"email domain: {recruiter.get('email_domain')}; "
+                    f"{recruiter.get('explanation')}",
+                    "SmallBody",
+                )
+            )
+        for item in report.get("positive_indicators", []):
+            story.extend(
+                [
+                    paragraph(
+                        f"Positive evidence: {item.get('name')} · no score reduction",
+                        "Heading4",
+                    ),
+                    paragraph(item.get("explanation"), "SmallBody"),
+                    paragraph(f"Evidence: {item.get('evidence')}", "SmallBody"),
+                ]
+            )
+
     indicators = report.get("indicators", [])
     if indicators:
         story.append(paragraph("Indicators", "Section"))
@@ -123,6 +170,12 @@ def build_pdf_report(report: dict[str, Any]) -> bytes:
                     paragraph(item.get("title") or item.get("source_type") or "Source", "Heading4"),
                     paragraph(f"URL: {item.get('url')}", "SmallBody"),
                     paragraph(item.get("excerpt"), "SmallBody"),
+                    paragraph(
+                        f"Provider: {', '.join(item.get('providers', []))}"
+                        if isinstance(item.get("providers"), list)
+                        else f"Provider: {item.get('provider', 'not recorded')}",
+                        "SmallBody",
+                    ),
                     Spacer(1, 5),
                 ]
             )

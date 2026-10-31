@@ -121,11 +121,23 @@ class TinyFishRouteTests(unittest.TestCase):
             with patch("app.main.httpx.AsyncClient", return_value=fake_client):
                 response = self.client.get("/api/search", params={"query": "scam"})
 
-        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.status_code, 503)
         self.assertNotIn("sensitive upstream response", response.text)
-        self.assertIn("provider=TinyFish operation=search request_status=failed", captured.output[0])
+        self.assertIn("provider=TinyFish operation=search request_status=rate_limited", captured.output[0])
         self.assertIn("response_status=429", captured.output[0])
         self.assertNotIn("test-key", captured.output[0])
+
+    def test_malformed_provider_response_is_rejected(self) -> None:
+        fake_client = FakeAsyncClient(
+            response=httpx.Response(200, json={"unexpected": "shape"})
+        )
+        with self.assertLogs("app.main", level="WARNING") as captured:
+            with patch("app.main.httpx.AsyncClient", return_value=fake_client):
+                response = self.client.get("/api/search", params={"query": "scam"})
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["detail"], "TinyFish returned an invalid response.")
+        self.assertIn("request_status=invalid_response", captured.output[0])
 
     def test_fetch_rejects_local_hostname(self) -> None:
         response = self.client.post(
@@ -370,6 +382,115 @@ class TinyFishRouteTests(unittest.TestCase):
         search.assert_awaited_once()
         fetch.assert_awaited_once_with(["https://example.com"])
 
+    def test_unrelated_merchant_warning_results_do_not_add_payment_risk(self) -> None:
+        search = AsyncMock(
+            return_value={
+                "results": [
+                    {
+                        "title": "Contoso Bank scam warning",
+                        "snippet": "Fraud complaints about Contoso Bank.",
+                        "url": "https://alerts.example/contoso",
+                    }
+                ]
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = InvestigationStore(os.path.join(directory, "payment.sqlite"))
+            with patch("app.main.store", store):
+                with patch("app.main.search_web", search):
+                    response = self.client.post(
+                        "/api/analyze/payment",
+                        json={"text": "Please review this payment.", "merchant_name": "Example Bank"},
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()
+        self.assertEqual(report["risk_score"], 0)
+        self.assertFalse(
+            any(
+                item["classification"] == "public_allegation"
+                for item in report["indicators"]
+            )
+        )
+        self.assertEqual(report["evidence"][0]["relevance"], "unrelated_not_scored")
+        self.assertEqual(report["evidence"][0]["provider"], "TinyFish Search")
+        self.assertIn("no merchant-related", " ".join(report["missing_information"]))
+        self.assertEqual(report["research_providers"]["search"]["status"], "completed")
+
+    def test_duplicate_payment_allegations_add_only_one_contribution(self) -> None:
+        search = AsyncMock(
+            return_value={
+                "results": [
+                    {
+                        "title": "Example Bank fraud complaint",
+                        "snippet": "A warning about Example Bank.",
+                        "url": "https://alerts.example/example-bank?utm_source=search",
+                    },
+                    {
+                        "title": "Example Bank fraud complaint",
+                        "snippet": "A warning about Example Bank.",
+                        "url": "https://alerts.example/example-bank",
+                    },
+                    {
+                        "title": "Example Bank scam warning",
+                        "snippet": "A separate allegation against Example Bank.",
+                        "url": "https://reports.example/example-bank",
+                    },
+                ]
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = InvestigationStore(os.path.join(directory, "payment.sqlite"))
+            with patch("app.main.store", store):
+                with patch("app.main.search_web", search):
+                    response = self.client.post(
+                        "/api/analyze/payment",
+                        json={"text": "Please review this payment.", "merchant_name": "Example Bank"},
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()
+        allegations = [
+            item
+            for item in report["indicators"]
+            if item["classification"] == "public_allegation"
+        ]
+        self.assertEqual(report["risk_score"], 8)
+        self.assertEqual(len(allegations), 1)
+        self.assertEqual(allegations[0]["score_contribution"], 8)
+        self.assertEqual(len(report["evidence"]), 2)
+        self.assertTrue(
+            all(item["relevance"] == "merchant_related" for item in report["evidence"])
+        )
+        self.assertEqual(report["target"], "Payment request: Example Bank")
+
+    def test_payment_allegation_without_a_valid_source_url_is_not_scored(self) -> None:
+        search = AsyncMock(
+            return_value={
+                "results": [
+                    {
+                        "title": "Example Bank fraud warning",
+                        "snippet": "An allegation about Example Bank.",
+                        "url": "javascript:alert(1)",
+                    }
+                ]
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = InvestigationStore(os.path.join(directory, "payment.sqlite"))
+            with patch("app.main.store", store):
+                with patch("app.main.search_web", search):
+                    response = self.client.post(
+                        "/api/analyze/payment",
+                        json={"text": "Please review this payment.", "merchant_name": "Example Bank"},
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()
+        self.assertEqual(report["risk_score"], 0)
+        self.assertEqual(report["evidence"], [])
+        self.assertEqual(report["sources"], [])
+
     def test_dns_lookup_failing_is_rejected(self) -> None:
         from app.main import validate_external_url
 
@@ -433,6 +554,34 @@ class AuthRouteTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/history", headers=second_headers).json(), [])
         self.assertEqual(
             self.client.get(f"/api/history/{report['id']}", headers=second_headers).status_code,
+            404,
+        )
+
+    def test_job_reports_are_isolated_between_accounts(self) -> None:
+        first = self.register("first-job@example.com")
+        second = self.register("second-job@example.com")
+        first_headers = {"Authorization": f"Bearer {first['access_token']}"}
+        second_headers = {"Authorization": f"Bearer {second['access_token']}"}
+        search = AsyncMock(return_value={"results": []})
+        with patch("app.main.search_web", search):
+            response = self.client.post(
+                "/api/investigations/job",
+                headers=first_headers,
+                json={
+                    "company_name": "Fictional Robotics",
+                    "description": "Robotics Intern. Job ID: 123456.",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()
+        self.assertEqual(report["job_verification"]["submitted_company"], "Fictional Robotics")
+        self.assertEqual(self.client.get("/api/history", headers=second_headers).json(), [])
+        self.assertEqual(
+            self.client.get(
+                f"/api/history/{report['id']}",
+                headers=second_headers,
+            ).status_code,
             404,
         )
 
@@ -580,10 +729,21 @@ class AuthRouteTests(unittest.TestCase):
         )
         self.assertEqual(login.status_code, 200)
 
-    def test_admin_allowlist_grants_role_only_server_side(self) -> None:
+    def test_allowlisted_email_does_not_grant_admin_on_public_registration(self) -> None:
         with patch.dict(os.environ, {"SCAMSHIELD_ADMIN_EMAILS": "admin@example.com"}):
             account = self.register("admin@example.com")
-        self.assertEqual(account["user"]["role"], "admin")
+        self.assertEqual(account["user"]["role"], "user")
+        response = self.client.get(
+            "/api/admin/analytics",
+            headers={"Authorization": f"Bearer {account['access_token']}"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+        with self.store._connection() as connection:
+            connection.execute(
+                "UPDATE users SET role = 'admin' WHERE email = ?",
+                ("admin@example.com",),
+            )
         response = self.client.get(
             "/api/admin/analytics",
             headers={"Authorization": f"Bearer {account['access_token']}"},

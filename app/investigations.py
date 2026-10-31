@@ -1,6 +1,7 @@
 import asyncio
 import re
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -43,6 +44,82 @@ COMPANY_NAME_SUFFIXES = {
     "plc",
     "the",
 }
+ROLE_STOPWORDS = {
+    "and",
+    "for",
+    "from",
+    "with",
+    "the",
+    "at",
+    "in",
+    "on",
+    "of",
+}
+ROLE_SYNONYMS = {
+    "internship": "intern",
+    "interns": "intern",
+    "engineering": "engineer",
+    "development": "developer",
+    "science": "scientist",
+    "analysis": "analyst",
+}
+RECRUITMENT_PLATFORMS = {
+    "boards.greenhouse.io": "Greenhouse",
+    "job-boards.greenhouse.io": "Greenhouse",
+    "greenhouse.io": "Greenhouse",
+    "jobs.lever.co": "Lever",
+    "lever.co": "Lever",
+    "jobs.ashbyhq.com": "Ashby",
+    "ashbyhq.com": "Ashby",
+    "myworkdayjobs.com": "Workday",
+    "jobs.smartrecruiters.com": "SmartRecruiters",
+    "smartrecruiters.com": "SmartRecruiters",
+    "icims.com": "iCIMS",
+    "jobvite.com": "Jobvite",
+    "indeed.com": "Indeed",
+    "linkedin.com": "LinkedIn",
+    "ziprecruiter.com": "ZipRecruiter",
+    "wellfound.com": "Wellfound",
+}
+
+
+def _first_string(
+    mappings: tuple[Mapping[str, Any], ...],
+    names: tuple[str, ...],
+    *,
+    limit: int = 8000,
+) -> str | None:
+    for mapping in mappings:
+        for name in names:
+            value = mapping.get(name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:limit]
+    return None
+
+
+def _labeled_listing_identifier(value: str) -> str | None:
+    match = re.search(
+        r"\b(?:job|requisition|req|position|posting)\s*"
+        r"(?:id|number|no\.?|#)?\s*[:#=-]\s*"
+        r"([a-z0-9][a-z0-9_-]{2,})",
+        value,
+        re.IGNORECASE,
+    )
+    return match.group(1).casefold() if match else None
+
+
+def _labeled_page_field(
+    text: str,
+    labels: tuple[str, ...],
+    *,
+    limit: int,
+) -> str | None:
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    match = re.search(
+        rf"(?im)^\s*(?:{label_pattern})\s*[:=-]\s*([^\r\n]{{2,{limit}}})",
+        text,
+    )
+    return match.group(1).strip() if match else None
 
 
 def _search_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -81,19 +158,52 @@ def _fetch_results(
     for index, result in enumerate(results):
         if not isinstance(result, dict):
             continue
-        requested_url = result.get("url")
-        if not isinstance(requested_url, str) and requested_urls and index < len(requested_urls):
-            requested_url = requested_urls[index]
-        final_url = result.get("final_url") or result.get("url")
-        pages.append(
-            {
-                "url": final_url,
-                "requested_url": requested_url,
-                "final_url": final_url,
-                "title": result.get("title", ""),
-                "text": result.get("text", ""),
-            }
+        raw_url = result.get("url")
+        input_url = result.get("requested_url") or result.get("input_url")
+        if not isinstance(input_url, str):
+            input_url = (
+                requested_urls[index]
+                if requested_urls and index < len(requested_urls)
+                else raw_url
+            )
+        final_url = (
+            result.get("final_url")
+            or result.get("redirected_url")
+            or raw_url
         )
+        structured_values = tuple(
+            value
+            for value in (
+                result,
+                result.get("job"),
+                result.get("structured_data"),
+                result.get("metadata"),
+            )
+            if isinstance(value, Mapping)
+        )
+        page = {
+            "url": final_url,
+            "requested_url": input_url,
+            "final_url": final_url,
+            "title": result.get("title", ""),
+            "text": result.get("text", result.get("content", "")),
+        }
+        for key, aliases, limit in (
+            ("company", ("company", "company_name", "employer"), 300),
+            ("job_title", ("job_title", "position_title", "role_title"), 500),
+            ("job_id", ("job_id", "requisition_id", "req_id", "position_id"), 200),
+            ("description", ("job_description", "description"), 8000),
+            (
+                "application_details",
+                ("application_details", "application_instructions", "how_to_apply"),
+                2000,
+            ),
+            ("application_url", ("application_url", "apply_url"), 1000),
+        ):
+            value = _first_string(structured_values, aliases, limit=limit)
+            if value:
+                page[key] = value
+        pages.append(page)
     return [
         {key: value for key, value in page.items() if key != "canonical_url"}
         for page in deduplicate_url_items(pages)
@@ -122,7 +232,6 @@ def _listing_identifier(value: str) -> str | None:
             if values:
                 return unquote(values[0]).casefold()
     candidates = [unquote(part) for part in parsed.path.split("/") if part]
-    candidates.append(value)
     for candidate in candidates:
         match = re.search(
             r"(?<![a-z0-9])(?:req|job|jr)[-_]?[a-z0-9]{4,}(?![a-z0-9])|(?<!\d)\d{5,}(?!\d)",
@@ -134,16 +243,81 @@ def _listing_identifier(value: str) -> str | None:
     return None
 
 
+def _recruitment_platform(host: str) -> str | None:
+    normalized_host = host.casefold().rstrip(".").removeprefix("www.")
+    for domain, platform in RECRUITMENT_PLATFORMS.items():
+        if normalized_host == domain or normalized_host.endswith(f".{domain}"):
+            return platform
+    return None
+
+
+def _brand_is_only_in_unverified_subdomain(company_name: str, host: str) -> bool:
+    labels = [label for label in host.casefold().rstrip(".").split(".") if label]
+    if len(labels) < 3 or _recruitment_platform(host):
+        return False
+    company_tokens = {
+        token
+        for token in _normalized_text(company_name).split()
+        if token not in COMPANY_NAME_SUFFIXES
+    }
+    distinctive_tokens = {token for token in company_tokens if len(token) >= 4}
+    brand_tokens = distinctive_tokens or company_tokens
+    host_tokens = {
+        token for label in labels for token in re.findall(r"[a-z0-9]+", label)
+    }
+    two_part_suffixes = {
+        "co.uk",
+        "com.au",
+        "co.in",
+        "com.sg",
+        "com.br",
+        "co.jp",
+        "com.cn",
+        "co.nz",
+        "com.mx",
+    }
+    suffix = ".".join(labels[-2:])
+    registrable_labels = labels[-3:] if suffix in two_part_suffixes else labels[-2:]
+    registrable_tokens = {
+        token
+        for label in registrable_labels
+        for token in re.findall(r"[a-z0-9]+", label)
+    }
+    return bool(brand_tokens & host_tokens and not brand_tokens & registrable_tokens)
+
+
+def _page_is_relevant_to_offer(
+    offer_url: str,
+    page: dict[str, Any],
+) -> bool:
+    if not domain_matches_url(offer_url, str(page.get("final_url") or "")):
+        final_host = urlsplit(str(page.get("final_url") or "")).hostname or ""
+        if not _recruitment_platform(final_host):
+            return False
+    return canonicalize_url(str(page.get("requested_url") or "")) == canonicalize_url(
+        offer_url
+    )
+
+
 def _role_matches(job_title: str, offer_description: str, company_name: str) -> bool:
     company_tokens = set(_normalized_text(company_name).split())
-    title_tokens = {
-        token
-        for token in re.findall(r"[a-z0-9]+", job_title.casefold())
-        if len(token) > 2
-        and token not in {"career", "careers", "job", "jobs", "opening"}
-        and token not in company_tokens
+    ignored_tokens = ROLE_STOPWORDS | {
+        "career",
+        "careers",
+        "job",
+        "jobs",
+        "opening",
     }
-    description_tokens = set(re.findall(r"[a-z0-9]+", offer_description.casefold()))
+
+    def role_tokens(value: str) -> set[str]:
+        return {
+            ROLE_SYNONYMS.get(token, token)
+            for token in re.findall(r"[a-z0-9]+", value.casefold())
+            if len(token) > 2 and token not in ignored_tokens
+        }
+
+    title_tokens = role_tokens(job_title) - company_tokens
+    description_tokens = role_tokens(offer_description)
     return bool(title_tokens and len(title_tokens & description_tokens) / len(title_tokens) >= 0.6)
 
 
@@ -163,8 +337,10 @@ def _job_search_result_is_relevant(
     if canonicalize_url(str(result.get("url") or "")) == canonicalize_url(offer_url):
         return True
     submitted_id = _listing_identifier(offer_url)
-    result_id = _listing_identifier(
-        f"{result.get('url', '')} {result.get('title', '')} {result.get('snippet', '')}"
+    result_id = _listing_identifier(str(result.get("url") or "")) or (
+        _labeled_listing_identifier(
+            f"{result.get('title', '')} {result.get('snippet', '')}"
+        )
     )
     return bool(submitted_id and result_id == submitted_id)
 
@@ -223,7 +399,7 @@ def _recruiter_details(
                 "name": "Recruiter email domain differs from offer site",
                 "explanation": "The difference warrants independent verification but does not prove impersonation.",
                 "evidence": f"Email domain: {email_domain}; offer host: {offer_host}",
-                "score_contribution": 5,
+                "score_contribution": 0,
                 "classification": "inference",
                 "severity": "low",
             }
@@ -249,15 +425,23 @@ def _job_verification(
     if not offer_url:
         return (
             {
+                "submitted_company": company_name,
                 "submitted_offer_url": None,
                 "final_fetched_url": None,
                 "page_title": None,
                 "page_company": None,
                 "job_title": None,
                 "job_id": None,
+                "submitted_job_id": _labeled_listing_identifier(description),
+                "job_id_match": None,
+                "job_description": None,
                 "available_description": None,
+                "application_details": None,
+                "application_url": None,
                 "company_status": "not_independently_verified",
                 "offer_domain_status": "not_applicable_no_offer_url",
+                "hosting_status": "not_checked",
+                "recruitment_platform": None,
                 "official_careers_domain_status": "not_verified",
                 "exact_listing_status": "not_checked_no_offer_url",
                 "explanation": "No offer URL was provided; company-level search results cannot verify a particular listing.",
@@ -266,10 +450,22 @@ def _job_verification(
         )
 
     canonical_offer_url = canonicalize_url(offer_url)
+    submitted_job_ids = [
+        item
+        for item in (
+            _listing_identifier(offer_url),
+            _labeled_listing_identifier(description),
+        )
+        if item
+    ]
+    submitted_job_id = submitted_job_ids[0] if submitted_job_ids else None
+    submitted_job_ids_match_each_other = len(set(submitted_job_ids)) <= 1
     exact_requested_pages = [
-        page for page in pages
+        page
+        for page in pages
         if canonical_offer_url
-        and canonicalize_url(str(page.get("requested_url") or "")) == canonical_offer_url
+        and canonicalize_url(str(page.get("requested_url") or ""))
+        == canonical_offer_url
     ]
     page = exact_requested_pages[0] if exact_requested_pages else None
     if page is None:
@@ -282,15 +478,23 @@ def _job_verification(
         )
         return (
             {
+                "submitted_company": company_name,
                 "submitted_offer_url": offer_url,
                 "final_fetched_url": pages[0].get("final_url") if pages else None,
                 "page_title": None,
                 "page_company": None,
                 "job_title": None,
                 "job_id": None,
+                "submitted_job_id": submitted_job_id,
+                "job_id_match": None,
+                "job_description": None,
                 "available_description": None,
+                "application_details": None,
+                "application_url": None,
                 "company_status": "not_independently_verified",
                 "offer_domain_status": "not_verified",
+                "hosting_status": "not_verified",
+                "recruitment_platform": None,
                 "official_careers_domain_status": "not_verified",
                 "exact_listing_status": status,
                 "explanation": "TinyFish did not return a page tied to the exact submitted offer URL; company search results are not listing verification.",
@@ -299,19 +503,38 @@ def _job_verification(
         )
 
     final_url = str(page.get("final_url") or "")
-    final_host_matches = bool(final_url and domain_matches_url(offer_url, final_url))
-    if not final_host_matches:
+    final_host = urlsplit(final_url).hostname or ""
+    recruitment_platform = _recruitment_platform(final_host)
+    redirected_to_other_domain = bool(
+        final_url and not domain_matches_url(offer_url, final_url)
+    )
+    page_can_be_checked = bool(
+        final_url
+        and (
+            domain_matches_url(offer_url, final_url)
+            or recruitment_platform is not None
+        )
+    )
+    if not page_can_be_checked:
         return (
             {
+                "submitted_company": company_name,
                 "submitted_offer_url": offer_url,
                 "final_fetched_url": final_url or None,
                 "page_title": str(page.get("title") or "") or None,
                 "page_company": None,
                 "job_title": str(page.get("title") or "") or None,
                 "job_id": _listing_identifier(final_url) if final_url else None,
+                "submitted_job_id": submitted_job_id,
+                "job_id_match": None,
+                "job_description": str(page.get("description") or "")[:8000] or None,
                 "available_description": str(page.get("text") or "")[:1200] or None,
+                "application_details": None,
+                "application_url": None,
                 "company_status": "not_independently_verified",
                 "offer_domain_status": "not_verified",
+                "hosting_status": "unrecognized_redirect_domain",
+                "recruitment_platform": None,
                 "official_careers_domain_status": "not_verified",
                 "exact_listing_status": "redirected_to_different_domain",
                 "explanation": "The remote fetch ended on a different domain. Its page content was not used to verify the submitted listing.",
@@ -321,8 +544,20 @@ def _job_verification(
 
     title = str(page.get("title") or "")
     page_text = str(page.get("text") or "")
-    combined_text = f"{title}\n{page_text}"
-    company_match = _mentions_company(combined_text, company_name)
+    page_description = str(page.get("description") or "")
+    combined_text = f"{title}\n{page_text}\n{page_description}"
+    page_company = str(page.get("company") or "").strip() or None
+    if page_company is None:
+        page_company = _labeled_page_field(
+            page_text,
+            ("company", "employer", "organization"),
+            limit=200,
+        )
+    company_match = (
+        _mentions_company(page_company, company_name)
+        if page_company
+        else _mentions_company(combined_text, company_name)
+    )
     offer_host = (urlsplit(offer_url).hostname or "").casefold()
     company_host_tokens = {
         token
@@ -337,26 +572,69 @@ def _job_verification(
     offer_domain_status = (
         "company_name_appears_in_host_but_domain_unverified"
         if company_host_tokens & company_tokens
+        else "recognized_third_party_recruitment_platform"
+        if recruitment_platform
         else "host_does_not_identify_company_domain_unverified"
     )
     company_status = "company_name_found_on_page" if company_match else "company_name_not_found_on_page"
     page_title = title or None
-    job_id = _listing_identifier(final_url) or _listing_identifier(page_text)
-    submitted_job_id = _listing_identifier(offer_url)
+    page_job_title = str(page.get("job_title") or "").strip()
+    if not page_job_title:
+        page_job_title = _labeled_page_field(
+            page_text,
+            ("job title", "position", "role"),
+            limit=250,
+        )
+    page_job_title = page_job_title or title
+    page_job_title = page_job_title.strip()
+    if not page_description:
+        page_description = _labeled_page_field(
+            page_text,
+            ("job description", "position description", "description"),
+            limit=8000,
+        ) or ""
+    job_id = (
+        str(page.get("job_id") or "").strip().casefold()
+        or _listing_identifier(final_url)
+        or _labeled_listing_identifier(page_text)
+    )
+    application_details = str(page.get("application_details") or "").strip()
+    if not application_details:
+        application_details = (
+            _labeled_page_field(
+                page_text,
+                ("how to apply", "application instructions", "application process"),
+                limit=1000,
+            )
+            or ""
+        )
+    application_url = str(page.get("application_url") or "").strip()
+    if not application_url and application_details:
+        application_url_match = re.search(
+            r"https?://[^\s<>\"']+",
+            application_details,
+            re.IGNORECASE,
+        )
+        application_url = application_url_match.group(0) if application_url_match else ""
     job_id_match = (
-        job_id == submitted_job_id
-        if submitted_job_id
+        bool(job_id and all(job_id == item for item in submitted_job_ids))
+        and submitted_job_ids_match_each_other
+        if submitted_job_ids
         else None
     )
-    role_match = _role_matches(title, description, company_name) if title else False
+    role_match = (
+        _role_matches(page_job_title, description, company_name)
+        if page_job_title
+        else False
+    )
 
     mismatches = []
     if not company_match:
         mismatches.append("The fetched page did not identify the submitted company name.")
-    if title and not role_match:
-        mismatches.append("The fetched page title did not sufficiently match the submitted offer details.")
+    if page_job_title and not role_match:
+        mismatches.append("The fetched job title did not sufficiently match the submitted offer details.")
     if submitted_job_id and job_id_match is False:
-        mismatches.append("The fetched page job identifier did not match the identifier in the submitted URL.")
+        mismatches.append("The fetched page job identifier did not match the identifier supplied with the offer.")
 
     details_match = bool(company_match and role_match and job_id_match is not False)
     if details_match:
@@ -368,25 +646,43 @@ def _job_verification(
 
     positives = []
     if details_match:
+        hosting_note = (
+            f"The listing was returned on the recognized {recruitment_platform} recruitment platform."
+            if recruitment_platform
+            else "The hosting domain has not been independently authenticated."
+        )
         positives.append(
             {
                 "name": "Fetched page details are consistent",
-                "explanation": "The page returned for the submitted URL contains the submitted company and role details. The employer's domain ownership and listing authenticity remain unverified, so this signal does not lower the score.",
-                "evidence": f"Page title: {title}",
+                "explanation": "The page returned for the submitted URL contains details consistent with the submitted company and role. "
+                f"{hosting_note} Listing authenticity and the employer's authority remain unverified, so this signal does not lower the score.",
+                "evidence": f"Page title: {title}; job title: {page_job_title or 'not available'}",
                 "classification": "verified_fact",
                 "score_adjustment": 0,
             }
         )
     verification = {
+        "submitted_company": company_name,
         "submitted_offer_url": offer_url,
         "final_fetched_url": final_url or None,
         "page_title": page_title,
-        "page_company": company_name if company_match else None,
-        "job_title": title or None,
+        "page_company": page_company or (company_name if company_match else None),
+        "job_title": page_job_title or None,
         "job_id": job_id,
-        "available_description": page_text[:1200] or None,
+        "submitted_job_id": submitted_job_id,
+        "job_description": page_description[:8000] or None,
+        "available_description": (page_description or page_text)[:1200] or None,
+        "application_details": application_details[:2000] or None,
+        "application_url": application_url[:1000] or None,
         "company_status": company_status,
         "offer_domain_status": offer_domain_status,
+        "hosting_status": (
+            "recognized_third_party_recruitment_platform"
+            if recruitment_platform
+            else "employer_domain_unverified"
+        ),
+        "recruitment_platform": recruitment_platform,
+        "redirect_detected": redirected_to_other_domain,
         "official_careers_domain_status": "not_independently_verified",
         "exact_listing_status": listing_status,
         "company_name_match": company_match,
@@ -629,10 +925,14 @@ async def investigate_job(
         )
     ]
     for result in results:
-        result_job_id = _listing_identifier(result["url"]) or _listing_identifier(
-            f"{result['title']} {result['snippet']}"
+        result_job_id = _listing_identifier(result["url"]) or (
+            _labeled_listing_identifier(
+                f"{result['title']} {result['snippet']}"
+            )
         )
-        submitted_job_id = _listing_identifier(offer_url or "")
+        submitted_job_id = _listing_identifier(offer_url or "") or (
+            _labeled_listing_identifier(description)
+        )
         exact_listing_reference = bool(
             offer_url
             and (
@@ -659,17 +959,49 @@ async def investigate_job(
         fetch_errors=fetch_errors,
     )
     job_verification["recruiter"] = recruiter_verification
+    offer_host = urlsplit(offer_url or "").hostname or ""
+    if offer_url and _brand_is_only_in_unverified_subdomain(company_name, offer_host):
+        indicators.append(
+            {
+                "name": "Company branding appears only in an unverified subdomain",
+                "explanation": "The company name appears in a subdomain, while the registered-domain portion does not contain that name. This is a rule-based impersonation warning, not authoritative proof of fraud.",
+                "evidence": f"Submitted offer host: {offer_host}",
+                "source": offer_url,
+                "score_contribution": 12,
+                "classification": "inference",
+                "severity": "medium",
+            }
+        )
+        job_verification["offer_domain_status"] = (
+            "brand_in_unverified_subdomain"
+        )
+        job_verification["hosting_status"] = (
+            "company_name_in_unverified_subdomain"
+        )
     requested_offer_pages = [
         page
         for page in pages
-        if offer_url
-        and canonicalize_url(str(page.get("requested_url") or "")) == canonicalize_url(offer_url)
+        if offer_url and _page_is_relevant_to_offer(offer_url, page)
     ]
-    relevant_pages = [
-        page
-        for page in requested_offer_pages
-        if domain_matches_url(offer_url or "", str(page.get("final_url") or ""))
-    ]
+    relevant_pages = requested_offer_pages
+    job_verification["research_providers"] = {
+        "search": {
+            "provider": "TinyFish Search",
+            "status": "completed" if isinstance(search_payload, dict) else "unavailable",
+        },
+        "fetch": {
+            "provider": "TinyFish Fetch",
+            "status": (
+                "not_requested"
+                if not offer_url
+                else "errors_reported"
+                if fetch_errors
+                else "page_returned"
+                if pages
+                else "completed_no_page_returned"
+            ),
+        },
+    }
     for page in pages:
         page["relevance"] = (
             "target_related"
@@ -684,6 +1016,7 @@ async def investigate_job(
             if page in relevant_pages
             else "not_verified_as_submitted_listing"
         )
+        page["provider"] = "TinyFish Fetch"
 
     for result in relevant_results:
         snippet = f"{result['title']} {result['snippet']}"
@@ -730,6 +1063,7 @@ async def investigate_job(
             "url": result["url"],
             "excerpt": result["snippet"],
             "source_type": "search_result",
+            "provider": "TinyFish Search",
             "relevance": result.get("relevance"),
             "evidence_scope": result.get("evidence_scope"),
         }
@@ -743,6 +1077,7 @@ async def investigate_job(
             "final_url": page.get("final_url"),
             "excerpt": str(page.get("text", ""))[:1200],
             "source_type": "fetched_page",
+            "provider": "TinyFish Fetch",
             "relevance": page.get("relevance"),
             "redirect_detected": page.get("redirect_detected", False),
             "evidence_scope": page.get("evidence_scope"),
@@ -770,10 +1105,14 @@ async def investigate_job(
     elif offer_url:
         missing.append("Company-level search results are not evidence that the submitted job listing is genuine.")
     if offer_url and not relevant_pages:
-        missing.append("The exact submitted offer URL did not return verifiable page content from the submitted site's domain.")
-    if requested_offer_pages and not relevant_pages:
+        missing.append("The exact submitted offer URL did not return page content from the submitted domain or a recognized recruitment platform.")
+    if pages and not relevant_pages and any(
+        canonicalize_url(str(page.get("requested_url") or ""))
+        == canonicalize_url(offer_url or "")
+        for page in pages
+    ):
         missing.append(
-            "Fetch returned a different final domain; its page content was excluded from scoring."
+            "Fetch redirected to an unrecognized domain; its page content was excluded from listing verification and scoring."
         )
     if not recruiter_contact:
         missing.append("Recruiter identity and contact could not be independently checked.")
@@ -792,6 +1131,19 @@ async def investigate_job(
         missing.append(job_verification["explanation"])
     if fetch_errors:
         missing.append("TinyFish reported one or more per-URL fetch errors; no exact-listing verification is claimed.")
+    if job_verification.get("recruitment_platform"):
+        missing.append(
+            "The listing is hosted by a recognized recruitment platform; this does not independently verify the employer's authority or the offer."
+        )
+    if relevant_pages:
+        if not job_verification.get("job_description"):
+            missing.append("The fetched page did not expose a distinct job description.")
+        if not job_verification.get("job_id"):
+            missing.append("No job identifier was available on the fetched page.")
+        elif not job_verification.get("submitted_job_id"):
+            missing.append("No submitted job identifier was available for comparison.")
+        if not job_verification.get("application_details"):
+            missing.append("Application instructions were not available in the fetched page data.")
 
     report = _report(
         investigation_type="job",
@@ -817,4 +1169,10 @@ async def investigate_job(
         job_verification=job_verification,
     )
     report["confidence"] = "limited"
+    report["risk_indicator_band"] = report["risk_category"]
+    if report["risk_score"] < 25:
+        report["risk_category"] = "Insufficient evidence"
+        report["risk_assessment_status"] = "insufficient_evidence"
+    else:
+        report["risk_assessment_status"] = "warning_signals_detected"
     return report

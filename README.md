@@ -19,9 +19,10 @@ notepad .env
 
 Set `TINYFISH_API_KEY` in `.env` locally. Do not share or commit that file. If
 `.env` already exists, preserve it and edit it without copying over it.
-To grant administrator analytics to specific accounts, set
-`SCAMSHIELD_ADMIN_EMAILS` to a comma-separated allowlist before those users
-register. Do not put credentials in frontend code.
+Public registration always creates a regular account. To provision an
+administrator, register the account first, stop the services, then update its
+role directly in the local database using the operator command in the
+authentication section below. Do not put credentials in frontend code.
 
 Start the backend and dashboard together from a PowerShell terminal in the
 project root:
@@ -87,8 +88,9 @@ Set `SCAMSHIELD_DATABASE_PATH` to choose another SQLite file.
   are scoped to the signed-in account. Existing pre-account history is retained
   in SQLite, but remains unassigned and is not exposed to newly registered
   accounts.
-- Server-enforced administrator analytics for emails explicitly listed in
-  `SCAMSHIELD_ADMIN_EMAILS`. Registration does not otherwise grant admin roles.
+- Server-enforced administrator analytics for accounts with an operator-
+  provisioned `admin` database role. Public registration cannot grant admin
+  access based on a claimed email address.
 - Integration status reports configuration without returning key
   material. TinyFish status means credentials are configured, not that a live
   request has been tested. Watchlist entries support manual follow-up only;
@@ -101,24 +103,41 @@ Set `SCAMSHIELD_DATABASE_PATH` to choose another SQLite file.
   page content.
 - Job/internship investigation issues a job-specific Search query and, when an
   offer URL is supplied, fetches that exact URL through TinyFish. The report
-  records submitted/final URLs, fetched title/text, and conservative company,
-  role and job-ID comparisons. Generic company results are labelled as
-  company-level evidence, not proof of a specific listing.
+  records submitted/final URLs, fetched title/text, structured company, role,
+  job-ID, description and application details when returned. It compares
+  submitted company, role and any supplied job ID. Generic company results are
+  labelled as company-level evidence, not proof of a specific listing.
+- Recognized third-party recruitment-platform redirects (including Greenhouse,
+  Lever, Ashby, Workday, SmartRecruiters, iCIMS, Jobvite, Indeed, LinkedIn,
+  ZipRecruiter and Wellfound) can be checked for listing-detail consistency
+  without adding risk points solely for platform hosting. Unrecognized
+  cross-domain redirects are recorded and excluded from listing verification
+  and page-content scoring. Platform or page consistency does not verify the
+  employer's authority or offer authenticity.
 - Recruiter email domains are screened for public email providers and
-  differences from the offer host; these are low-weight warnings only and do
-  not verify identity. Matching page text does not establish that a domain is
+  differences from the offer host; a host mismatch is informational only and
+  adds no risk points because legitimate employers may use external recruiting
+  platforms. Public email providers may trigger a low-weight warning. Neither
+  check verifies identity. Matching page text does not establish that a domain is
   company-operated. Official careers-domain ownership is not independently
   verified by this build, and matching offer details do not reduce risk scores.
 - Job-offer inputs are scored with explicit rules for fees, guaranteed
-  placement claims, sensitive identity/banking requests, urgency and recruiter
-  email-domain warnings. Missing or inaccessible listing evidence adds no risk
-  points. The report separates these inferences from fetched-page consistency
-  observations and public allegations.
+  placement claims, sensitive identity/banking requests (including Aadhaar,
+  PAN and OTPs), urgency, unsupported no-interview promises, unusual salary
+  claims and suspicious brand-only subdomains. Every indicator includes its
+  evidence and point contribution. Missing or inaccessible listing evidence
+  adds no risk points. Low job scores are classified as **Insufficient
+  evidence** rather than a green low-risk finding when authenticity is
+  unverified.
 - Email, phone, company and domain investigations collect real TinyFish public
   search results. Email and phone lookups require explicit consent. These
   reports do not assign a risk score or claim identity/reputation verification.
 - Message and payment request analysis runs local deterministic rules and does
-  not automatically open message links.
+  not automatically open message links. When a merchant is supplied for
+  payment analysis, TinyFish Search results are attributed and marked relevant
+  or unrelated; unrelated warning results cannot affect the score, and
+  multiple merchant-related public allegations contribute at most one
+  low-weight signal.
 - Reports explain each matched indicator and score contribution. Missing
   information adds no risk points.
 - TinyFish Search/Fetch server logs record provider, operation, request outcome,
@@ -128,12 +147,18 @@ Set `SCAMSHIELD_DATABASE_PATH` to choose another SQLite file.
   report.
 - Website/job search evidence is matched to the investigated domain or company;
   unrelated results remain visible but are excluded from risk scoring.
+- Evidence records identify TinyFish Search or TinyFish Fetch as the provider;
+  when the same URL is returned by both, the combined source retains both
+  attributions.
 - Evidence URLs are canonicalized for duplicate detection. A Fetch result whose
   final host differs from the submitted target is labeled and excluded from
   scoring; this does not prevent or control redirects followed by TinyFish.
 - SQLite stores investigation reports and supports history/retrieval. Raw
   message/payment submissions and offer descriptions are not persisted;
   user-submitted-text snippets are redacted in stored records.
+- Investigation report state is cleared on sign-out, account change, and before
+  each new investigation so a failed request or later user cannot see a stale
+  report from the previous request or account.
 
 ## Security and interpretation limits
 
@@ -154,8 +179,16 @@ Accounts are local to this installation. Email verification, OAuth, email-based
 password recovery, and multi-factor authentication are not configured. Password
 changes require a signed-in user; email recovery is unavailable without an
 email delivery provider. Protect the host and SQLite database accordingly.
-Administrator access is controlled only by the server-side
-`SCAMSHIELD_ADMIN_EMAILS` allowlist.
+Public registration always assigns the `user` role. To grant administrator
+access, stop the app and promote an account through a local operator action:
+
+```powershell
+.\.venv\Scripts\python.exe -c "import sqlite3; db=sqlite3.connect('scamshield.db'); cursor=db.execute('UPDATE users SET role=? WHERE email=?', ('admin', 'your-email@example.com')); db.commit(); print(f'Updated {cursor.rowcount} account(s)'); db.close()"
+```
+
+If `SCAMSHIELD_DATABASE_PATH` points to a different file, use that database
+path instead. Review existing `admin` roles when upgrading, because prior
+administrator assignments remain in the database.
 
 Upstream error bodies and internal exception details are not returned to the
 dashboard. Live API failures return a clear service error, and failed requests

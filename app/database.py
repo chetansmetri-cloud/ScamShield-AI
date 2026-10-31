@@ -303,14 +303,10 @@ class InvestigationStore:
         email: str,
         display_name: str,
         password: str,
-        *,
-        admin_emails: set[str] | None = None,
     ) -> dict[str, str]:
         normalized_email = email.strip().lower()
         user_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
-        allowlisted_admins = admin_emails or set()
-        role = "admin" if normalized_email in allowlisted_admins else "user"
         with self._connection() as connection:
             connection.execute(
                 """
@@ -322,7 +318,7 @@ class InvestigationStore:
                     normalized_email,
                     display_name.strip(),
                     self._password_hash(password),
-                    role,
+                    "user",
                     now,
                 ),
             )

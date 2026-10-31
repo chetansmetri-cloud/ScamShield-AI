@@ -79,7 +79,116 @@ class JobVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(verification["role_details_match"])
         self.assertEqual(verification["official_careers_domain_status"], "not_independently_verified")
         self.assertEqual(report["risk_score"], 0)
+        self.assertEqual(report["risk_category"], "Insufficient evidence")
+        self.assertEqual(report["risk_assessment_status"], "insufficient_evidence")
         self.assertIn("not lower the score", report["positive_indicators"][0]["explanation"])
+
+    async def test_google_listing_fields_are_extracted_without_claiming_domain_ownership(self) -> None:
+        offer_url = "https://careers.google.com/jobs/results/123456"
+        report, _, _ = await self.investigate(
+            company="Google",
+            description="Software Engineer, Cloud Infrastructure. Job ID: 123456.",
+            offer_url=offer_url,
+            fetch_results=[{
+                "url": offer_url,
+                "final_url": offer_url,
+                "title": "Google Careers",
+                "text": "Google is hiring a Software Engineer, Cloud Infrastructure. Job ID: 123456.",
+                "company_name": "Google",
+                "job_title": "Software Engineer, Cloud Infrastructure",
+                "job_id": "123456",
+                "job_description": "Build cloud infrastructure.",
+                "application_instructions": "Apply through the careers portal.",
+                "application_url": "https://careers.google.com/apply/123456",
+            }],
+        )
+
+        verification = report["job_verification"]
+        self.assertEqual(verification["submitted_company"], "Google")
+        self.assertEqual(verification["submitted_offer_url"], offer_url)
+        self.assertEqual(verification["job_title"], "Software Engineer, Cloud Infrastructure")
+        self.assertEqual(verification["job_id"], "123456")
+        self.assertTrue(verification["job_id_match"])
+        self.assertEqual(verification["job_description"], "Build cloud infrastructure.")
+        self.assertEqual(verification["application_details"], "Apply through the careers portal.")
+        self.assertEqual(verification["application_url"], "https://careers.google.com/apply/123456")
+        self.assertEqual(verification["official_careers_domain_status"], "not_independently_verified")
+        self.assertEqual(report["evidence"][0]["provider"], "TinyFish Fetch")
+
+    async def test_microsoft_listing_matches_submitted_title_and_job_id(self) -> None:
+        offer_url = "https://jobs.careers.microsoft.com/global/en/job/123456"
+        report, _, _ = await self.investigate(
+            company="Microsoft",
+            description="Software Engineer, Cloud Infrastructure. Job ID: 123456.",
+            offer_url=offer_url,
+            fetch_results=[{
+                "url": offer_url,
+                "final_url": offer_url,
+                "title": "Microsoft Careers",
+                "text": "Microsoft is hiring a Software Engineer, Cloud Infrastructure. Job ID: 123456.",
+                "company": "Microsoft",
+                "job_title": "Software Engineer, Cloud Infrastructure",
+                "job_id": "123456",
+            }],
+        )
+
+        verification = report["job_verification"]
+        self.assertTrue(verification["company_name_match"])
+        self.assertTrue(verification["role_details_match"])
+        self.assertTrue(verification["job_id_match"])
+        self.assertEqual(
+            verification["exact_listing_status"],
+            "page_details_match_not_officially_verified",
+        )
+        self.assertEqual(verification["official_careers_domain_status"], "not_independently_verified")
+
+    async def test_recognized_third_party_platform_can_verify_listing_details_neutrally(self) -> None:
+        offer_url = "https://jobs.acmerobotics.test/openings/123456"
+        final_url = "https://boards.greenhouse.io/acmerobotics/jobs/123456"
+        report, _, _ = await self.investigate(
+            offer_url=offer_url,
+            fetch_results=[{
+                "url": offer_url,
+                "final_url": final_url,
+                "title": "Robotics Intern",
+                "text": "Acme Robotics Robotics Intern. Job ID: 123456.",
+                "company": "Acme Robotics",
+                "job_title": "Robotics Intern",
+                "job_id": "123456",
+            }],
+        )
+
+        verification = report["job_verification"]
+        self.assertEqual(verification["recruitment_platform"], "Greenhouse")
+        self.assertEqual(
+            verification["exact_listing_status"],
+            "page_details_match_not_officially_verified",
+        )
+        self.assertTrue(verification["redirect_detected"])
+        self.assertEqual(report["risk_score"], 0)
+        self.assertEqual(report["evidence"][0]["relevance"], "target_related")
+        self.assertIn(
+            "recognized Greenhouse recruitment platform",
+            report["positive_indicators"][0]["explanation"],
+        )
+
+    async def test_job_id_in_offer_description_is_compared_when_url_has_no_id(self) -> None:
+        offer_url = "https://careers.acmerobotics.test/openings/robotics-intern"
+        report, _, _ = await self.investigate(
+            description="Robotics Intern role. Job ID: 123456.",
+            offer_url=offer_url,
+            fetch_results=[{
+                "url": offer_url,
+                "final_url": offer_url,
+                "title": "Robotics Intern",
+                "text": "Company: Acme Robotics\nJob Title: Robotics Intern\nJob ID: 123456",
+            }],
+        )
+
+        verification = report["job_verification"]
+        self.assertEqual(verification["submitted_job_id"], "123456")
+        self.assertEqual(verification["job_id"], "123456")
+        self.assertTrue(verification["job_id_match"])
 
     async def test_internship_listing_is_not_mislabeled_as_a_job_mismatch(self) -> None:
         url = "https://jobs.orbitlabs.test/intern/987654"
@@ -118,10 +227,11 @@ class JobVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(verification["official_careers_domain_status"], "not_independently_verified")
         self.assertEqual(
             verification["offer_domain_status"],
-            "company_name_appears_in_host_but_domain_unverified",
+            "brand_in_unverified_subdomain",
         )
         self.assertEqual(verification["exact_listing_status"], "page_details_match_not_officially_verified")
-        self.assertEqual(report["risk_score"], 0)
+        self.assertEqual(report["risk_score"], 12)
+        self.assertEqual(report["risk_category"], "Insufficient evidence")
         self.assertFalse(any("official" in item["name"].casefold() for item in report["positive_indicators"]))
 
     async def test_real_company_name_does_not_offset_a_registration_fee_rule(self) -> None:
@@ -136,6 +246,22 @@ class JobVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Advance payment request", names)
         self.assertIn("Urgent pressure", names)
         self.assertEqual(report["risk_category"], "Some concerns")
+
+    async def test_guaranteed_internship_without_interview_and_training_fee_is_flagged(self) -> None:
+        report, _, _ = await self.investigate(
+            company="Orbit Labs",
+            description=(
+                "Guaranteed internship placement with no interview or selection process. "
+                "Pay the training fee before your direct joining."
+            ),
+            offer_url=None,
+        )
+
+        names = {item["name"] for item in report["indicators"]}
+        self.assertIn("Guaranteed placement claim", names)
+        self.assertIn("Advance payment request", names)
+        self.assertIn("Hiring process bypassed despite unusual promises", names)
+        self.assertGreaterEqual(report["risk_score"], 50)
 
     async def test_same_fee_signal_in_offer_and_page_is_scored_once(self) -> None:
         offer_url = "https://careers.acmerobotics.test/jobs/123456"
@@ -209,6 +335,48 @@ class JobVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["risk_score"], 0)
         self.assertFalse(any(item["name"] == "Advance payment request" for item in report["indicators"]))
 
+    async def test_fetched_company_mismatch_is_reported(self) -> None:
+        offer_url = "https://careers.acmerobotics.test/jobs/123456"
+        report, _, _ = await self.investigate(
+            offer_url=offer_url,
+            fetch_results=[{
+                "url": offer_url,
+                "final_url": offer_url,
+                "title": "Robotics Intern",
+                "text": "Other Systems is hiring a Robotics Intern. Job ID: 123456.",
+                "company_name": "Other Systems",
+                "job_title": "Robotics Intern",
+                "job_id": "123456",
+            }],
+        )
+
+        verification = report["job_verification"]
+        self.assertFalse(verification["company_name_match"])
+        self.assertEqual(verification["page_company"], "Other Systems")
+        self.assertEqual(verification["exact_listing_status"], "page_details_mismatch")
+        self.assertEqual(report["risk_score"], 0)
+
+    async def test_fetched_job_id_mismatch_is_reported(self) -> None:
+        offer_url = "https://careers.acmerobotics.test/jobs/123456"
+        report, _, _ = await self.investigate(
+            offer_url=offer_url,
+            fetch_results=[{
+                "url": offer_url,
+                "final_url": offer_url,
+                "title": "Robotics Intern",
+                "text": "Acme Robotics Robotics Intern. Job ID: 654321.",
+                "company_name": "Acme Robotics",
+                "job_title": "Robotics Intern",
+                "job_id": "654321",
+            }],
+        )
+
+        verification = report["job_verification"]
+        self.assertEqual(verification["submitted_job_id"], "123456")
+        self.assertEqual(verification["job_id"], "654321")
+        self.assertFalse(verification["job_id_match"])
+        self.assertEqual(verification["exact_listing_status"], "page_details_mismatch")
+
     async def test_generic_company_search_does_not_verify_the_job_listing(self) -> None:
         report, _, fetch = await self.investigate(
             search_results=[
@@ -225,6 +393,57 @@ class JobVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(report["positive_indicators"])
         self.assertEqual(report["live_research"], "partial")
         self.assertTrue(any("not evidence that the submitted job listing is genuine" in item for item in report["missing_information"]))
+
+    async def test_unrelated_company_search_result_is_retained_but_not_scored(self) -> None:
+        report, _, _ = await self.investigate(
+            company="Acme Robotics",
+            search_results=[{
+                "title": "Amazon software engineering jobs",
+                "snippet": "Amazon careers and hiring information.",
+                "url": "https://www.amazon.jobs/",
+            }],
+        )
+
+        self.assertEqual(report["evidence"][0]["relevance"], "unrelated_not_scored")
+        self.assertEqual(report["risk_score"], 0)
+        self.assertEqual(report["job_verification"]["exact_listing_status"], "page_unavailable_or_access_limited")
+
+    async def test_unrecognized_redirect_content_is_not_used_to_verify_or_score_listing(self) -> None:
+        offer_url = "https://careers.acmerobotics.test/jobs/123456"
+        report, _, _ = await self.investigate(
+            offer_url=offer_url,
+            fetch_results=[self.page(
+                url=offer_url,
+                final_url="https://unrecognized.example.net/jobs/123456",
+                text="Acme Robotics Robotics Intern. Job ID: 123456. Pay registration fee.",
+            )],
+        )
+
+        self.assertEqual(
+            report["job_verification"]["exact_listing_status"],
+            "redirected_to_different_domain",
+        )
+        self.assertEqual(report["risk_score"], 0)
+        self.assertEqual(report["evidence"][0]["relevance"], "redirected_to_other_domain_not_scored")
+
+    async def test_missing_page_description_is_reported_without_claiming_it_was_extracted(self) -> None:
+        offer_url = "https://careers.acmerobotics.test/jobs/123456"
+        report, _, _ = await self.investigate(
+            offer_url=offer_url,
+            fetch_results=[{
+                "url": offer_url,
+                "final_url": offer_url,
+                "title": "Robotics Intern",
+                "text": "Company: Acme Robotics\nJob Title: Robotics Intern\nJob ID: 123456",
+            }],
+        )
+
+        verification = report["job_verification"]
+        self.assertEqual(verification["page_company"], "Acme Robotics")
+        self.assertEqual(verification["job_title"], "Robotics Intern")
+        self.assertEqual(verification["job_id"], "123456")
+        self.assertIsNone(verification["job_description"])
+        self.assertEqual(verification["exact_listing_status"], "page_details_match_not_officially_verified")
 
     async def test_per_url_fetch_failure_is_reported_without_penalizing_missing_evidence(self) -> None:
         report, _, _ = await self.investigate(
@@ -252,44 +471,85 @@ class JobVerificationTests(unittest.IsolatedAsyncioTestCase):
 
         recruiter = report["job_verification"]["recruiter"]
         self.assertEqual(recruiter["status"], "domain_differs_from_offer_site_unverified")
-        self.assertTrue(any(
-            item["name"] == "Recruiter email domain differs from offer site"
+        mismatch_indicator = next(
+            item
             for item in report["indicators"]
-        ))
+            if item["name"] == "Recruiter email domain differs from offer site"
+        )
+        self.assertEqual(mismatch_indicator["score_contribution"], 0)
+        self.assertEqual(report["risk_score"], 0)
+        self.assertEqual(report["confidence"], "limited")
 
     async def test_sequential_jobs_keep_evidence_scoped_to_the_current_offer(self) -> None:
-        first_url = "https://careers.acmerobotics.test/jobs/123456"
+        first_url = "https://jobs.careers.microsoft.com/global/en/job/123456"
         first, _, _ = await self.investigate(
+            company="Microsoft",
+            description="Software Engineer role, job ID 123456.",
             offer_url=first_url,
-            fetch_results=[self.page(url=first_url)],
+            fetch_results=[self.page(
+                url=first_url,
+                title="Software Engineer - Microsoft",
+                text="Microsoft is hiring a Software Engineer. Job ID: 123456.",
+            )],
             search_results=[{
-                "title": "Acme Robotics careers",
-                "snippet": "Robotics Intern",
+                "title": "Microsoft careers",
+                "snippet": "Software Engineer role, job 123456.",
                 "url": first_url,
             }],
         )
 
-        second_url = "https://jobs.orbitlabs.test/roles/987654"
+        second_url = "https://jobs.fictionalcompany.test/roles/987654"
         second, _, _ = await self.investigate(
-            company="Orbit Labs",
+            company="Fictional Company",
             description="Data Science Intern, job ID 987654.",
             offer_url=second_url,
             fetch_results=[self.page(
                 url=second_url,
-                title="Data Science Intern - Orbit Labs",
-                text="Orbit Labs Data Science Intern. Job ID 987654.",
+                title="Data Science Intern - Fictional Company",
+                text="Fictional Company Data Science Intern. Job ID 987654.",
             )],
             search_results=[{
-                "title": "Orbit Labs Data Science Intern",
+                "title": "Fictional Company Data Science Intern",
                 "snippet": "A current internship listing.",
                 "url": second_url,
             }],
         )
 
-        self.assertTrue(all("acmerobotics" not in source for source in second["sources"]))
-        self.assertTrue(all("acmerobotics" not in item.get("excerpt", "").casefold() for item in second["evidence"]))
+        self.assertTrue(all("microsoft" not in source for source in second["sources"]))
+        self.assertTrue(all("microsoft" not in item.get("excerpt", "").casefold() for item in second["evidence"]))
         self.assertEqual(first["job_verification"]["submitted_offer_url"], first_url)
         self.assertEqual(second["job_verification"]["submitted_offer_url"], second_url)
+
+    async def test_amazon_evidence_does_not_leak_into_a_later_unrelated_investigation(self) -> None:
+        amazon_url = "https://amazon.jobs/en/jobs/123456"
+        await self.investigate(
+            company="Amazon",
+            description="Software Engineer role, job ID 123456.",
+            offer_url=amazon_url,
+            fetch_results=[self.page(
+                url=amazon_url,
+                title="Software Engineer - Amazon",
+                text="Amazon is hiring a Software Engineer. Job ID: 123456.",
+            )],
+            search_results=[{
+                "title": "Amazon software engineering jobs",
+                "snippet": "Amazon careers and hiring information.",
+                "url": amazon_url,
+            }],
+        )
+
+        fictional_report, _, _ = await self.investigate(
+            company="Fictional Company",
+            description="Data Science Intern role, job ID 987654.",
+            offer_url="https://careers.fictionalcompany.test/jobs/987654",
+        )
+
+        self.assertEqual(fictional_report["target"], "Fictional Company")
+        self.assertTrue(all("amazon" not in source.casefold() for source in fictional_report["sources"]))
+        self.assertTrue(all(
+            "amazon" not in str(item.get("excerpt", "")).casefold()
+            for item in fictional_report["evidence"]
+        ))
 
     async def test_provider_failure_propagates_instead_of_creating_a_success_report(self) -> None:
         search = AsyncMock(side_effect=HTTPException(status_code=502, detail="TinyFish request failed."))

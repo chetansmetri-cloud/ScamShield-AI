@@ -69,6 +69,21 @@ def deduplicate_url_items(items: Iterable[dict[str, object]]) -> list[dict[str, 
         existing = deduplicated[existing_index]
         existing_type = str(existing.get("source_type", ""))
         current_type = str(current.get("source_type", ""))
+        providers = list(
+            dict.fromkeys(
+                provider
+                for item in (existing, current)
+                for provider in (
+                    item.get("providers")
+                    if isinstance(item.get("providers"), list)
+                    else [item.get("provider")]
+                )
+                if isinstance(provider, str) and provider
+            )
+        )
+        if providers:
+            current["providers"] = providers
+            existing["providers"] = providers
         if existing_type == "search_result" and current_type == "fetched_page":
             current["search_excerpt"] = existing.get("excerpt", "")
             current["source_type"] = "search_result_and_fetched_page"
