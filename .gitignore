@@ -1,0 +1,29 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.db
+*.sqlite
+*.sqlite3
+.run/
+# Local secrets and environment
+.env
+.env.*
+!.env.example
+
+# Python environment and cache
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local databases
+*.db
+
+# Generated files
+.pytest_cache/
+.coverage
+
+# Protect API keys and local secrets
+/.env
+

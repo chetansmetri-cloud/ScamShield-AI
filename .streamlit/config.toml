@@ -1,0 +1,12 @@
+[theme]
+base = "light"
+primaryColor = "#2457FF"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3F5F9"
+textColor = "#101828"
+font = "sans-serif"
+headingFont = "sans-serif"
+chartCategoricalColors = ["#2457FF", "#C7F000", "#667085", "#A9BAFF", "#101828"]
+showWidgetBorder = true
+baseRadius = "0.65rem"
+buttonRadius = "0.65rem"
