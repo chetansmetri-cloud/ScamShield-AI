@@ -81,6 +81,25 @@ RECRUITMENT_PLATFORMS = {
     "ziprecruiter.com": "ZipRecruiter",
     "wellfound.com": "Wellfound",
 }
+TWO_PART_PUBLIC_SUFFIXES = {
+    "co.uk",
+    "org.uk",
+    "ac.uk",
+    "gov.uk",
+    "com.au",
+    "net.au",
+    "org.au",
+    "edu.au",
+    "co.in",
+    "org.in",
+    "net.in",
+    "com.sg",
+    "com.br",
+    "co.jp",
+    "co.nz",
+    "com.cn",
+    "com.mx",
+}
 
 
 def _first_string(
@@ -251,6 +270,51 @@ def _recruitment_platform(host: str) -> str | None:
     return None
 
 
+def _registrable_domain(host: str) -> str:
+    labels = host.casefold().rstrip(".").removeprefix("www.").split(".")
+    if len(labels) < 2:
+        return host.casefold().rstrip(".")
+    suffix = ".".join(labels[-2:])
+    if suffix in TWO_PART_PUBLIC_SUFFIXES and len(labels) >= 3:
+        return ".".join(labels[-3:])
+    return suffix
+
+
+def _same_domain_family(first_host: str, second_host: str) -> bool:
+    return bool(
+        first_host
+        and second_host
+        and _registrable_domain(first_host) == _registrable_domain(second_host)
+    )
+
+
+def _direct_domain_allegation(target_url: str, text: str) -> bool:
+    host = urlsplit(target_url).hostname or ""
+    registrable = _registrable_domain(host)
+    brand = registrable.split(".", 1)[0]
+    target = rf"(?:{re.escape(registrable)}|{re.escape(brand)})"
+    accusation = r"(?:scam|fraud(?:ulent)?|deceptive|criminal)"
+    return bool(
+        re.search(
+            rf"\b{target}\b\s+(?:(?:website|site|company|business)\s+)?"
+            rf"(?:is|was|are|were)\s+(?:an?\s+)?{accusation}\b",
+            text,
+            re.IGNORECASE,
+        )
+        or re.search(
+            rf"\bcomplaints?\s+(?:against|about)\s+{target}\b",
+            text,
+            re.IGNORECASE,
+        )
+        or re.search(
+            rf"\b{target}\b\s+(?:has\s+been\s+)?accused\s+of\s+"
+            rf"(?:running\s+)?(?:an?\s+)?{accusation}\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _brand_is_only_in_unverified_subdomain(company_name: str, host: str) -> bool:
     labels = [label for label in host.casefold().rstrip(".").split(".") if label]
     if len(labels) < 3 or _recruitment_platform(host):
@@ -265,19 +329,7 @@ def _brand_is_only_in_unverified_subdomain(company_name: str, host: str) -> bool
     host_tokens = {
         token for label in labels for token in re.findall(r"[a-z0-9]+", label)
     }
-    two_part_suffixes = {
-        "co.uk",
-        "com.au",
-        "co.in",
-        "com.sg",
-        "com.br",
-        "co.jp",
-        "com.cn",
-        "co.nz",
-        "com.mx",
-    }
-    suffix = ".".join(labels[-2:])
-    registrable_labels = labels[-3:] if suffix in two_part_suffixes else labels[-2:]
+    registrable_labels = _registrable_domain(host).split(".")
     registrable_tokens = {
         token
         for label in registrable_labels
@@ -290,8 +342,10 @@ def _page_is_relevant_to_offer(
     offer_url: str,
     page: dict[str, Any],
 ) -> bool:
-    if not domain_matches_url(offer_url, str(page.get("final_url") or "")):
-        final_host = urlsplit(str(page.get("final_url") or "")).hostname or ""
+    final_url = str(page.get("final_url") or "")
+    final_host = urlsplit(final_url).hostname or ""
+    offer_host = urlsplit(offer_url).hostname or ""
+    if not _same_domain_family(offer_host, final_host):
         if not _recruitment_platform(final_host):
             return False
     return canonicalize_url(str(page.get("requested_url") or "")) == canonicalize_url(
@@ -504,6 +558,7 @@ def _job_verification(
 
     final_url = str(page.get("final_url") or "")
     final_host = urlsplit(final_url).hostname or ""
+    offer_host = urlsplit(offer_url).hostname or ""
     recruitment_platform = _recruitment_platform(final_host)
     redirected_to_other_domain = bool(
         final_url and not domain_matches_url(offer_url, final_url)
@@ -511,7 +566,7 @@ def _job_verification(
     page_can_be_checked = bool(
         final_url
         and (
-            domain_matches_url(offer_url, final_url)
+            _same_domain_family(offer_host, final_host)
             or recruitment_platform is not None
         )
     )
@@ -585,8 +640,14 @@ def _job_verification(
             ("job title", "position", "role"),
             limit=250,
         )
-    page_job_title = page_job_title or title
-    page_job_title = page_job_title.strip()
+    if not page_job_title and title and not re.search(
+        r"\b(?:jobs?\s+search|search\s+jobs|careers?\s+(?:home|search)|"
+        r"job openings|open positions)\b",
+        title,
+        re.IGNORECASE,
+    ):
+        page_job_title = title
+    page_job_title = page_job_title.strip() if page_job_title else ""
     if not page_description:
         page_description = _labeled_page_field(
             page_text,
@@ -625,7 +686,7 @@ def _job_verification(
     role_match = (
         _role_matches(page_job_title, description, company_name)
         if page_job_title
-        else False
+        else None
     )
 
     mismatches = []
@@ -792,20 +853,39 @@ async def investigate_website(url: str, search: Search, fetch: Fetch) -> dict[st
     page_text = "\n".join(str(page.get("text", "")) for page in relevant_pages)
     indicators = _website_indicators(page_text)
 
+    public_warning_results = []
     for result in relevant_search_items:
         text = f"{result['title']} {result['snippet']}"
-        if re.search(r"\b(scam|fraud|complaint|warning)\b", text, re.IGNORECASE):
-            indicators.append(
-                {
-                    "name": "Public warning or allegation in search result",
-                    "explanation": "A search result contains warning-related language; this is an allegation, not proof.",
-                    "evidence": text[:500],
-                    "source": result["url"],
-                    "score_contribution": 8,
-                    "classification": "public_allegation",
-                    "severity": "low",
-                }
-            )
+        if (
+            not domain_matches_url(url, result["url"])
+            and re.search(r"\b(scam|fraud|complaint|warning)\b", text, re.IGNORECASE)
+            and _direct_domain_allegation(url, text)
+        ):
+            public_warning_results.append(result)
+    if public_warning_results:
+        supporting_sources = list(
+            dict.fromkeys(result["url"] for result in public_warning_results)
+        )
+        supporting_text = " | ".join(
+            f"{result['title']}: {result['snippet']}"
+            for result in public_warning_results[:3]
+        )
+        indicators.append(
+            {
+                "name": "Public warning or allegation in search results",
+                "explanation": (
+                    "One low-weight signal is applied to relevant third-party "
+                    "warning results. Multiple results do not stack, and these "
+                    "unverified allegations are not proof."
+                ),
+                "evidence": supporting_text[:500],
+                "source": supporting_sources[0],
+                "supporting_sources": supporting_sources[:3],
+                "score_contribution": 8,
+                "classification": "public_allegation",
+                "severity": "low",
+            }
+        )
 
     sources = [result["url"] for result in search_items]
     sources.extend(str(page["url"]) for page in pages if page.get("url"))
@@ -815,6 +895,7 @@ async def investigate_website(url: str, search: Search, fetch: Fetch) -> dict[st
             "url": result["url"],
             "excerpt": result["snippet"],
             "source_type": "search_result",
+            "provider": "TinyFish Search",
             "relevance": result.get("relevance"),
         }
         for result in search_items
@@ -825,6 +906,7 @@ async def investigate_website(url: str, search: Search, fetch: Fetch) -> dict[st
             "url": page.get("url"),
             "excerpt": str(page.get("text", ""))[:1200],
             "source_type": "fetched_page",
+            "provider": "TinyFish Fetch",
             "relevance": page.get("relevance"),
             "redirect_detected": page.get("redirect_detected", False),
         }
@@ -854,7 +936,7 @@ async def investigate_website(url: str, search: Search, fetch: Fetch) -> dict[st
     if not indicators:
         missing.append("No configured rule-based warning patterns matched the fetched text.")
 
-    return _report(
+    report = _report(
         investigation_type="website",
         target=url,
         indicators=indicators,
@@ -868,6 +950,27 @@ async def investigate_website(url: str, search: Search, fetch: Fetch) -> dict[st
         ],
         completeness="public search and fetched page" if fetch_ok and search_ok else "partial",
     )
+    report["research_providers"] = {
+        "search": {
+            "provider": "TinyFish Search",
+            "status": "completed" if search_items else "completed_no_results",
+        },
+        "fetch": {
+            "provider": "TinyFish Fetch",
+            "status": (
+                "errors_reported"
+                if failed_fetches
+                else "page_returned"
+                if pages
+                else "completed_no_page_returned"
+            ),
+        },
+    }
+    if live_status != "completed" and report["risk_score"] < 25:
+        report["risk_category"] = "Insufficient evidence"
+        report["risk_assessment_status"] = "insufficient_evidence"
+        report["risk_indicator_band"] = "Insufficient evidence"
+    return report
 
 
 async def investigate_job(
@@ -1018,6 +1121,7 @@ async def investigate_job(
         )
         page["provider"] = "TinyFish Fetch"
 
+    public_recruitment_warnings = []
     for result in relevant_results:
         snippet = f"{result['title']} {result['snippet']}"
         if (
@@ -1029,17 +1133,34 @@ async def investigate_job(
                 re.IGNORECASE,
             )
         ):
-            indicators.append(
-                {
-                    "name": "Public recruitment warning or allegation",
-                    "explanation": "A company-level search result contains recruitment warning language; it is an allegation and does not verify or prove anything about this specific offer.",
-                    "evidence": snippet[:500],
-                    "source": result["url"],
-                    "score_contribution": 8,
-                    "classification": "public_allegation",
-                    "severity": "low",
-                }
+            public_recruitment_warnings.append((result, snippet))
+    if public_recruitment_warnings:
+        supporting_sources = list(
+            dict.fromkeys(
+                result["url"] for result, _ in public_recruitment_warnings
             )
+        )
+        supporting_text = " | ".join(
+            f"{result['title']}: {snippet}"
+            for result, snippet in public_recruitment_warnings[:3]
+        )
+        indicators.append(
+            {
+                "name": "Public recruitment warning or allegation",
+                "explanation": (
+                    "One low-weight signal is applied to relevant company-level "
+                    "warning results. Multiple results do not stack, and these "
+                    "unverified allegations do not establish anything about "
+                    "this specific offer."
+                ),
+                "evidence": supporting_text[:500],
+                "source": supporting_sources[0],
+                "supporting_sources": supporting_sources[:3],
+                "score_contribution": 8,
+                "classification": "public_allegation",
+                "severity": "low",
+            }
+        )
 
     if job_verification["exact_listing_status"] == "page_details_match_not_officially_verified":
         matched_rule_names = {
@@ -1169,10 +1290,10 @@ async def investigate_job(
         job_verification=job_verification,
     )
     report["confidence"] = "limited"
-    report["risk_indicator_band"] = report["risk_category"]
     if report["risk_score"] < 25:
         report["risk_category"] = "Insufficient evidence"
         report["risk_assessment_status"] = "insufficient_evidence"
     else:
         report["risk_assessment_status"] = "warning_signals_detected"
+    report["risk_indicator_band"] = report["risk_category"]
     return report

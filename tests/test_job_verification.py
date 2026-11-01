@@ -172,6 +172,59 @@ class JobVerificationTests(unittest.IsolatedAsyncioTestCase):
             report["positive_indicators"][0]["explanation"],
         )
 
+    async def test_official_career_redirect_within_same_domain_family_is_checked(self) -> None:
+        offer_url = "https://careers.google.com/jobs/results/123456-software-engineer/"
+        final_url = "https://www.google.com/about/careers/applications/jobs/results/123456-software-engineer/"
+        report, _, _ = await self.investigate(
+            company="Google",
+            description="Software Engineer. Job ID: 123456.",
+            offer_url=offer_url,
+            fetch_results=[{
+                "url": offer_url,
+                "final_url": final_url,
+                "title": "Software Engineer - Google Careers",
+                "text": "Google is hiring a Software Engineer. Job ID: 123456.",
+            }],
+        )
+
+        verification = report["job_verification"]
+        self.assertEqual(verification["final_fetched_url"], final_url)
+        self.assertTrue(verification["redirect_detected"])
+        self.assertTrue(verification["company_name_match"])
+        self.assertTrue(verification["role_details_match"])
+        self.assertTrue(verification["job_id_match"])
+        self.assertEqual(
+            verification["exact_listing_status"],
+            "page_details_match_not_officially_verified",
+        )
+        self.assertEqual(report["evidence"][0]["relevance"], "target_related")
+        self.assertTrue(report["evidence"][0]["redirect_detected"])
+
+    async def test_generic_job_search_title_does_not_create_a_role_mismatch(self) -> None:
+        offer_url = "https://careers.google.com/jobs/results/123456-software-engineer/"
+        final_url = "https://www.google.com/about/careers/applications/jobs/results/123456-software-engineer/"
+        report, _, _ = await self.investigate(
+            company="Google",
+            description="Software Engineer. Job ID: 123456.",
+            offer_url=offer_url,
+            fetch_results=[{
+                "url": offer_url,
+                "final_url": final_url,
+                "title": "Jobs search - Google Careers",
+                "text": "Google is an equal opportunity employer.",
+            }],
+        )
+
+        verification = report["job_verification"]
+        self.assertIsNone(verification["job_title"])
+        self.assertIsNone(verification["role_details_match"])
+        self.assertTrue(verification["job_id_match"])
+        self.assertEqual(
+            verification["exact_listing_status"],
+            "page_fetched_details_insufficient",
+        )
+        self.assertEqual(report["risk_score"], 0)
+
     async def test_job_id_in_offer_description_is_compared_when_url_has_no_id(self) -> None:
         offer_url = "https://careers.acmerobotics.test/openings/robotics-intern"
         report, _, _ = await self.investigate(
@@ -407,6 +460,33 @@ class JobVerificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["evidence"][0]["relevance"], "unrelated_not_scored")
         self.assertEqual(report["risk_score"], 0)
         self.assertEqual(report["job_verification"]["exact_listing_status"], "page_unavailable_or_access_limited")
+
+    async def test_multiple_public_recruitment_warnings_add_only_one_contribution(self) -> None:
+        report, _, _ = await self.investigate(
+            company="Acme Robotics",
+            description="Robotics Intern role.",
+            offer_url=None,
+            search_results=[
+                {
+                    "title": f"Acme Robotics recruitment warning {index}",
+                    "snippet": "A public complaint alleges an internship scam.",
+                    "url": f"https://reports{index}.example.net/acme",
+                }
+                for index in range(4)
+            ],
+        )
+
+        warnings = [
+            item
+            for item in report["indicators"]
+            if item["classification"] == "public_allegation"
+        ]
+        self.assertEqual(report["risk_score"], 8)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(
+            len(warnings[0]["supporting_sources"]),
+            3,
+        )
 
     async def test_unrecognized_redirect_content_is_not_used_to_verify_or_score_listing(self) -> None:
         offer_url = "https://careers.acmerobotics.test/jobs/123456"

@@ -326,6 +326,14 @@ class TinyFishRouteTests(unittest.TestCase):
             {item["source_type"] for item in report["evidence"]},
             {"search_result", "fetched_page"},
         )
+        self.assertEqual(
+            {item["provider"] for item in report["evidence"]},
+            {"TinyFish Search", "TinyFish Fetch"},
+        )
+        self.assertEqual(
+            report["research_providers"]["fetch"]["provider"],
+            "TinyFish Fetch",
+        )
         search.assert_awaited_once()
         fetch.assert_awaited_once()
 
@@ -361,8 +369,30 @@ class TinyFishRouteTests(unittest.TestCase):
         self.assertEqual(report["indicators"][0]["classification"], "inference")
 
     def test_message_link_research_is_opt_in(self) -> None:
-        search = AsyncMock(return_value={"results": []})
-        fetch = AsyncMock(return_value={"results": [], "errors": []})
+        search = AsyncMock(
+            return_value={
+                "results": [
+                    {
+                        "title": "Example public page",
+                        "snippet": "Page summary",
+                        "url": "https://example.com/about",
+                    }
+                ]
+            }
+        )
+        fetch = AsyncMock(
+            return_value={
+                "results": [
+                    {
+                        "url": "https://example.com",
+                        "final_url": "https://example.com",
+                        "title": "Example",
+                        "text": "Public page text",
+                    }
+                ],
+                "errors": [],
+            }
+        )
         public_address = (2, 1, 6, "", ("93.184.216.34", 443))
         with tempfile.TemporaryDirectory() as directory:
             store = InvestigationStore(os.path.join(directory, "history.sqlite"))
@@ -381,6 +411,11 @@ class TinyFishRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         search.assert_awaited_once()
         fetch.assert_awaited_once_with(["https://example.com"])
+        report = response.json()
+        self.assertEqual(
+            {item["provider"] for item in report["evidence"]},
+            {"TinyFish Search", "TinyFish Fetch"},
+        )
 
     def test_unrelated_merchant_warning_results_do_not_add_payment_risk(self) -> None:
         search = AsyncMock(
@@ -657,6 +692,11 @@ class AuthRouteTests(unittest.TestCase):
         self.assertEqual(report["analysis_method"], "evidence_only")
         self.assertEqual(report["risk_category"], "Evidence gathered; not scored")
         self.assertEqual(len(report["evidence"]), 1)
+        self.assertEqual(report["evidence"][0]["provider"], "TinyFish Search")
+        self.assertEqual(
+            report["research_providers"]["search"]["provider"],
+            "TinyFish Search",
+        )
         self.assertEqual(self.store.get(report["id"], user_id=account["user"]["id"])["id"], report["id"])
 
     def test_history_deletion_is_owner_scoped(self) -> None:

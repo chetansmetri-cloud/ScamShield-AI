@@ -93,6 +93,34 @@ class InvestigationStore:
                     created_at TEXT NOT NULL,
                     UNIQUE (user_id, value, item_type)
                 );
+                CREATE TABLE IF NOT EXISTS watchlist_monitoring (
+                    watchlist_id TEXT PRIMARY KEY
+                        REFERENCES watchlist(id) ON DELETE CASCADE,
+                    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                    interval_hours INTEGER NOT NULL CHECK (interval_hours >= 6),
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS watchlist_monitor_checks (
+                    id TEXT PRIMARY KEY,
+                    watchlist_id TEXT NOT NULL
+                        REFERENCES watchlist(id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    checked_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    report_json TEXT NOT NULL,
+                    delta_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS watchlist_alerts (
+                    id TEXT PRIMARY KEY,
+                    watchlist_id TEXT NOT NULL
+                        REFERENCES watchlist(id) ON DELETE CASCADE,
+                    check_id TEXT NOT NULL
+                        REFERENCES watchlist_monitor_checks(id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    read_at TEXT
+                );
                 CREATE TABLE IF NOT EXISTS user_preferences (
                     user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                     language TEXT NOT NULL DEFAULT 'en',
@@ -102,12 +130,24 @@ class InvestigationStore:
                     email TEXT NOT NULL,
                     attempted_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS rate_limit_events (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_investigations_user_created
                     ON investigations(user_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_sessions_user
                     ON auth_sessions(user_id);
                 CREATE INDEX IF NOT EXISTS idx_login_attempts
                     ON login_attempts(email, attempted_at);
+                CREATE INDEX IF NOT EXISTS idx_monitor_checks_owner
+                    ON watchlist_monitor_checks(user_id, checked_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_monitor_alerts_owner
+                    ON watchlist_alerts(user_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_rate_limits_owner_action_time
+                    ON rate_limit_events(user_id, action, created_at DESC);
                 """
             )
 
@@ -489,6 +529,7 @@ class InvestigationStore:
             if row is None:
                 return
             connection.execute("DELETE FROM investigations WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM rate_limit_events WHERE user_id = ?", (user_id,))
             connection.execute("DELETE FROM login_attempts WHERE email = ?", (row["email"],))
             connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
@@ -561,17 +602,23 @@ class InvestigationStore:
             "monitoring": "manual_only",
         }
 
-    def list_watchlist(self, user_id: str) -> list[dict[str, str]]:
+    def list_watchlist(self, user_id: str) -> list[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(
                 """
-                SELECT id, value, item_type, created_at
-                FROM watchlist WHERE user_id = ? ORDER BY created_at DESC
+                SELECT watchlist.id, value, item_type, watchlist.created_at,
+                       CASE WHEN monitoring.enabled = 1 THEN 'scheduled' ELSE 'manual_only' END
+                           AS monitoring,
+                       monitoring.interval_hours
+                FROM watchlist
+                LEFT JOIN watchlist_monitoring AS monitoring
+                    ON monitoring.watchlist_id = watchlist.id
+                WHERE user_id = ? ORDER BY watchlist.created_at DESC
                 """,
                 (user_id,),
             ).fetchall()
         return [
-            {**dict(row), "monitoring": "manual_only"}
+            dict(row)
             for row in rows
         ]
 
@@ -581,6 +628,39 @@ class InvestigationStore:
                 "DELETE FROM watchlist WHERE id = ? AND user_id = ?",
                 (item_id, user_id),
             )
+
+    def allow_rate_limited_action(
+        self,
+        user_id: str,
+        action: str,
+        *,
+        limit: int,
+        window_seconds: int,
+    ) -> bool:
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(seconds=window_seconds)).isoformat()
+        with self._connection() as connection:
+            connection.execute(
+                "DELETE FROM rate_limit_events WHERE created_at < ?",
+                ((now - timedelta(days=1)).isoformat(),),
+            )
+            count = connection.execute(
+                """
+                SELECT COUNT(*) FROM rate_limit_events
+                WHERE user_id = ? AND action = ? AND created_at >= ?
+                """,
+                (user_id, action, cutoff),
+            ).fetchone()[0]
+            if count >= limit:
+                return False
+            connection.execute(
+                """
+                INSERT INTO rate_limit_events (id, user_id, action, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), user_id, action, now.isoformat()),
+            )
+        return True
 
     def admin_analytics(self) -> dict[str, int]:
         with self._connection() as connection:

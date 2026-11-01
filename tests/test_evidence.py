@@ -50,14 +50,17 @@ class EvidenceRelevanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(report["indicators"])
         self.assertEqual(report["evidence"][0]["relevance"], "unrelated_not_scored")
         self.assertEqual(report["live_research"], "partial")
+        self.assertEqual(report["risk_category"], "Insufficient evidence")
+        self.assertEqual(report["risk_assessment_status"], "insufficient_evidence")
+        self.assertEqual(report["risk_indicator_band"], "Insufficient evidence")
 
     async def test_relevant_public_allegation_is_labeled_and_low_contribution(self) -> None:
         search = AsyncMock(
             return_value={
                 "results": [
                     {
-                        "title": "Warning: example.com",
-                        "snippet": "A forum post alleges suspicious activity.",
+                        "title": "example.com is a scam",
+                        "snippet": "A complaint alleges fraudulent billing by example.com.",
                         "url": "https://forum.example.net/post/1",
                     }
                 ]
@@ -71,6 +74,74 @@ class EvidenceRelevanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(report["indicators"]), 1)
         self.assertEqual(report["indicators"][0]["classification"], "public_allegation")
         self.assertNotIn("fraudulent", report["risk_category"].lower())
+
+    async def test_multiple_public_warnings_add_only_one_contribution(self) -> None:
+        search = AsyncMock(
+            return_value={
+                "results": [
+                    {
+                        "title": f"example.com is a scam report {index}",
+                        "snippet": "A complaint alleges fraudulent billing by example.com.",
+                        "url": f"https://forum{index}.example.net/post",
+                    }
+                    for index in range(4)
+                ]
+            }
+        )
+        fetch = AsyncMock(return_value={"results": [], "errors": []})
+
+        report = await investigate_website("https://example.com", search, fetch)
+
+        self.assertEqual(report["risk_score"], 8)
+        self.assertEqual(len(report["indicators"]), 1)
+        self.assertEqual(
+            len(report["indicators"][0]["supporting_sources"]),
+            3,
+        )
+
+    async def test_first_party_warning_page_is_not_scored_as_an_allegation(self) -> None:
+        search = AsyncMock(
+            return_value={
+                "results": [
+                    {
+                        "title": "Protect yourself from tech support scams",
+                        "snippet": "Report suspicious activity at example.com.",
+                        "url": "https://support.example.com/security/scams",
+                    }
+                ]
+            }
+        )
+        fetch = AsyncMock(return_value={"results": [], "errors": []})
+
+        report = await investigate_website("https://example.com", search, fetch)
+
+        self.assertEqual(report["risk_score"], 0)
+        self.assertFalse(report["indicators"])
+        self.assertEqual(report["evidence"][0]["relevance"], "target_related")
+
+    async def test_impersonation_warning_does_not_accuse_target_domain(self) -> None:
+        search = AsyncMock(
+            return_value={
+                "results": [
+                    {
+                        "title": "Microsoft pop-up tech support scam warning",
+                        "snippet": "Criminals impersonate microsoft.com to target users.",
+                        "url": "https://alerts.example.net/microsoft-tech-support",
+                    }
+                ]
+            }
+        )
+        fetch = AsyncMock(return_value={"results": [], "errors": []})
+
+        report = await investigate_website(
+            "https://www.microsoft.com",
+            search,
+            fetch,
+        )
+
+        self.assertEqual(report["risk_score"], 0)
+        self.assertFalse(report["indicators"])
+        self.assertEqual(report["evidence"][0]["relevance"], "target_related")
 
     async def test_redirected_page_content_is_not_scored(self) -> None:
         search = AsyncMock(return_value={"results": []})

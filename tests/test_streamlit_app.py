@@ -16,6 +16,18 @@ class FakeResponse:
 
 
 class StreamlitSessionIsolationTests(unittest.TestCase):
+    def test_auth_portal_initializes_radio_state_without_exception(self) -> None:
+        app_path = Path(__file__).resolve().parents[1] / "frontend" / "streamlit_app.py"
+        app = AppTest.from_file(str(app_path), default_timeout=30)
+
+        with patch("httpx.get", return_value=FakeResponse()):
+            with patch("httpx.request", return_value=FakeResponse()):
+                app.session_state["show_auth_portal"] = True
+                app.run()
+
+        self.assertEqual(len(app.exception), 0)
+        self.assertEqual(app.session_state["auth_mode"], "Sign in")
+
     def test_sign_out_clears_previous_users_job_report(self) -> None:
         app_path = Path(__file__).resolve().parents[1] / "frontend" / "streamlit_app.py"
         app = AppTest.from_file(str(app_path), default_timeout=30)
@@ -87,4 +99,94 @@ class StreamlitSessionIsolationTests(unittest.TestCase):
         self.assertNotIn("auth_token", app.session_state)
         self.assertNotIn("active_report", app.session_state)
         self.assertNotIn("active_report_mode", app.session_state)
+        self.assertEqual(len(app.exception), 0)
+
+    def test_advanced_screens_load_without_streamlit_exceptions(self) -> None:
+        app_path = Path(__file__).resolve().parents[1] / "frontend" / "streamlit_app.py"
+        pages = [
+            "Job scam detector",
+            "Email scam detection",
+            "Screenshot analyzer",
+            "QR scanner",
+            "AI security assistant",
+            "Batch URL investigation",
+            "Watchlist",
+            "Scam alerts",
+        ]
+        for page in pages:
+            with self.subTest(page=page):
+                app = AppTest.from_file(str(app_path), default_timeout=30)
+                with patch("httpx.get", return_value=FakeResponse()):
+                    with patch("httpx.request", return_value=FakeResponse()):
+                        app.session_state["auth_token"] = "test-session"
+                        app.session_state["account"] = {
+                            "id": "test-user",
+                            "display_name": "Test User",
+                            "role": "user",
+                        }
+                        app.session_state["main_navigation"] = page
+                        app.run()
+                self.assertEqual(len(app.exception), 0)
+
+    def test_batch_renders_multiple_reports_with_repeated_charts(self) -> None:
+        app_path = Path(__file__).resolve().parents[1] / "frontend" / "streamlit_app.py"
+        app = AppTest.from_file(str(app_path), default_timeout=30)
+        urls = ["https://first.example", "https://second.example"]
+
+        def make_report(report_id: str, url: str) -> dict[str, object]:
+            return {
+                "id": report_id,
+                "created_at": "2026-10-31T00:00:00+00:00",
+                "investigation_type": "website",
+                "target": url,
+                "risk_score": 0,
+                "risk_category": "Insufficient evidence",
+                "risk_assessment_status": "insufficient_evidence",
+                "risk_indicator_band": "Insufficient evidence",
+                "confidence": "limited",
+                "information_completeness": "partial",
+                "analysis_method": "rule_based",
+                "live_research": "partial",
+                "scoring_explanation": "No warning rules matched.",
+                "disclaimer": "Screening aid only.",
+                "indicators": [
+                    {
+                        "name": "Example signal",
+                        "explanation": "A test rule matched.",
+                        "evidence": "Test evidence.",
+                        "score_contribution": 8,
+                        "classification": "inference",
+                        "severity": "low",
+                    }
+                ],
+                "positive_indicators": [],
+                "evidence": [],
+                "sources": [],
+                "missing_information": [],
+                "recommended_next_steps": [],
+            }
+
+        app.session_state["auth_token"] = "test-session"
+        app.session_state["account"] = {
+            "id": "test-user",
+            "display_name": "Test User",
+            "role": "user",
+        }
+        app.session_state["main_navigation"] = "Batch URL investigation"
+        app.session_state["batch_result"] = {
+            "summary": {"total": 2, "completed": 2, "failed": 0, "duplicates": 0},
+            "results": [
+                {
+                    "submitted_url": url,
+                    "status": "completed",
+                    "report": make_report(f"report-{index}", url),
+                }
+                for index, url in enumerate(urls)
+            ],
+        }
+
+        with patch("httpx.get", return_value=FakeResponse()):
+            with patch("httpx.request", return_value=FakeResponse()):
+                app.run()
+
         self.assertEqual(len(app.exception), 0)

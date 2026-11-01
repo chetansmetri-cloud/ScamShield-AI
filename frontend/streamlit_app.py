@@ -21,6 +21,7 @@ NAVIGATION = [
     "URL scanner",
     "Message scanner",
     "Job scam detector",
+    "Email scam detection",
     "Payment scam checker",
     "Email intelligence",
     "Phone intelligence",
@@ -29,6 +30,7 @@ NAVIGATION = [
     "Screenshot analyzer",
     "QR scanner",
     "AI security assistant",
+    "Batch URL investigation",
     "Threat intelligence",
     "Evidence graph",
     "Investigation timeline",
@@ -66,6 +68,7 @@ st.markdown(
 
 
 def api_call(method: str, route: str, **kwargs: Any) -> Any:
+    timeout = kwargs.pop("timeout", 90)
     headers = authorization_headers(
         st.session_state.get("auth_token"),
         kwargs.pop("headers", {}),
@@ -74,7 +77,7 @@ def api_call(method: str, route: str, **kwargs: Any) -> Any:
         response = httpx.request(
             method,
             f"{API_BASE_URL}{route}",
-            timeout=90,
+            timeout=timeout,
             headers=headers,
             **kwargs,
         )
@@ -175,27 +178,29 @@ def render_sidebar() -> str:
             "URL scanner": "03  URL scanner",
             "Message scanner": "04  Message scanner",
             "Job scam detector": "05  Job scam detector",
-            "Payment scam checker": "06  Payment scam checker",
-            "Email intelligence": "07  Email intelligence",
-            "Phone intelligence": "08  Phone intelligence",
-            "Company intelligence": "09  Company intelligence",
-            "Domain intelligence": "10  Domain intelligence",
-            "Screenshot analyzer": "11  Screenshot analyzer",
-            "QR scanner": "12  QR scanner",
-            "AI security assistant": "13  AI security assistant",
-            "Threat intelligence": "14  Threat intelligence",
-            "Evidence graph": "15  Evidence graph",
-            "Investigation timeline": "16  Investigation timeline",
-            "History": "17  History",
-            "Saved reports": "18  Saved reports",
-            "Watchlist": "19  Watchlist",
-            "Scam alerts": "20  Scam alerts",
-            "Analytics": "21  Analytics",
-            "Profile": "22  Profile",
-            "Settings": "23  Settings",
-            "Integrations": "24  Integration status",
-            "Risk methodology": "25  Risk methodology",
-            "Help & support": "26  Help & support",
+            "Email scam detection": "06  Email scam detection",
+            "Payment scam checker": "07  Payment scam checker",
+            "Email intelligence": "08  Email intelligence",
+            "Phone intelligence": "09  Phone intelligence",
+            "Company intelligence": "10  Company intelligence",
+            "Domain intelligence": "11  Domain intelligence",
+            "Screenshot analyzer": "12  Screenshot analyzer",
+            "QR scanner": "13  QR scanner",
+            "AI security assistant": "14  AI security assistant",
+            "Batch URL investigation": "15  Batch URL investigation",
+            "Threat intelligence": "16  Threat intelligence",
+            "Evidence graph": "17  Evidence graph",
+            "Investigation timeline": "18  Investigation timeline",
+            "History": "19  History",
+            "Saved reports": "20  Saved reports",
+            "Watchlist": "21  Watchlist",
+            "Scam alerts": "22  Scam alerts",
+            "Analytics": "23  Analytics",
+            "Profile": "24  Profile",
+            "Settings": "25  Settings",
+            "Integrations": "26  Integration status",
+            "Risk methodology": "27  Risk methodology",
+            "Help & support": "28  Help & support",
             "Admin": "Admin console",
         }[value],
     )
@@ -330,7 +335,12 @@ def render_risk_gauge(report: dict[str, Any]) -> None:
         )
     )
     figure.update_layout(**chart_layout(height=250, margin={"l": 24, "r": 24, "t": 48, "b": 12}))
-    st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+    st.plotly_chart(
+        figure,
+        width="stretch",
+        config={"displayModeBar": False},
+        key=f"risk-gauge-{report.get('id', 'unknown')}",
+    )
     st.markdown(
         f'<div class="risk-label" style="--risk-accent:{color}">{html.escape(category)}</div>',
         unsafe_allow_html=True,
@@ -554,6 +564,32 @@ def render_report(report: dict[str, Any]) -> None:
 
     if report.get("investigation_type") == "job":
         render_job_verification(report)
+    if report.get("retained_in_history") is False:
+        st.caption("This sensitive report is not retained in investigation history.")
+    offer_details = report.get("extracted_details")
+    if isinstance(offer_details, dict):
+        render_section_title(
+            "Extracted offer details",
+            "Document text/OCR claims are not authenticated facts.",
+        )
+        st.json(offer_details)
+        if report.get("verified_facts"):
+            st.markdown("**Verified observations**")
+            for fact in report["verified_facts"]:
+                st.write(f"- {fact}")
+        else:
+            st.caption("No offer-letter claim is independently authenticated.")
+        if report.get("unverified_claims"):
+            st.markdown("**Unverified document claims**")
+            for claim in report["unverified_claims"]:
+                st.write(f"- {claim}")
+    email_details = report.get("email_details")
+    if isinstance(email_details, dict):
+        render_section_title(
+            "Email details",
+            "Message content is screened locally unless link research was explicitly requested.",
+        )
+        st.json(email_details)
 
     summary, gauge = st.columns([1.3, 0.8], gap="large")
     with summary:
@@ -611,7 +647,12 @@ def render_report(report: dict[str, Any]) -> None:
             showlegend=False,
             margin={"l": 12, "r": 40, "t": 12, "b": 12},
         ))
-        st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+        st.plotly_chart(
+            figure,
+            width="stretch",
+            config={"displayModeBar": False},
+            key=f"risk-breakdown-{report.get('id', 'unknown')}",
+        )
         tabs = st.tabs([f"{label} · {len(items)}" for label, items in groups])
         for tab, (label, items) in zip(tabs, groups):
             with tab:
@@ -699,7 +740,16 @@ def render_report(report: dict[str, Any]) -> None:
             st.caption("No additional gaps were reported.")
 
     report_id = str(report.get("id") or "")
-    if report_id:
+    if report_id and report.get("retained_in_history") is False:
+        with st.expander("Download this unretained report"):
+            st.download_button(
+                "Download report data",
+                data=json.dumps(report, indent=2, ensure_ascii=False),
+                file_name=f"scamshield-{report_id[:8]}.json",
+                mime="application/json",
+                key=f"json-{report_id}",
+            )
+    elif report_id:
         with st.expander("Export or share this report"):
             note = st.text_input(
                 "Private note for saved report",
@@ -897,17 +947,79 @@ def run_investigation(mode: str) -> None:
         elif mode == "Offer":
             company = st.session_state.get("job_company", "").strip()
             description = st.session_state.get("job_description", "").strip()
-            if not company or not description:
-                st.warning("Company name and offer details are required.")
+            uploaded = st.session_state.get("offer_letter_file")
+            if not description and uploaded is None:
+                st.warning("Paste offer details or upload an offer letter.")
                 return
-            body: dict[str, str] = {"company_name": company, "description": description}
-            contact = st.session_state.get("job_contact", "").strip()
-            offer_url = st.session_state.get("job_url", "").strip()
-            if contact:
-                body["recruiter_contact"] = contact
-            if offer_url:
-                body["offer_url"] = offer_url
-            report = api_call("POST", "/api/investigations/job", json=body)
+            data = {
+                key: value
+                for key, value in {
+                    "pasted_text": description,
+                    "company_name": company,
+                    "recruiter_contact": st.session_state.get("job_contact", "").strip(),
+                    "job_title": st.session_state.get("offer_job_title", "").strip(),
+                    "job_id": st.session_state.get("offer_job_id", "").strip(),
+                    "salary_or_stipend": st.session_state.get("offer_salary", "").strip(),
+                    "offer_date": st.session_state.get("offer_date", "").strip(),
+                    "joining_date": st.session_state.get("joining_date", "").strip(),
+                    "offer_url": st.session_state.get("job_url", "").strip(),
+                    "application_url": st.session_state.get("application_url", "").strip(),
+                }.items()
+                if value
+            }
+            data["retain_report"] = str(
+                st.session_state.get("retain_offer_report", False)
+            ).lower()
+            files = None
+            if uploaded is not None:
+                files = {
+                    "file": (
+                        uploaded.name,
+                        uploaded.getvalue(),
+                        uploaded.type or "application/octet-stream",
+                    )
+                }
+            report = api_call(
+                "POST",
+                "/api/investigations/offer-letter",
+                data=data,
+                files=files,
+            )
+        elif mode == "Email Scam Analysis":
+            body_text = st.session_state.get("email_body", "").strip()
+            uploaded = st.session_state.get("email_file")
+            if not body_text and uploaded is None:
+                st.warning("Paste an email or upload a plain-text .eml file.")
+                return
+            if uploaded is not None:
+                report = api_call(
+                    "POST",
+                    "/api/analyze/email-upload",
+                    data={
+                        "retain_report": str(
+                            st.session_state.get("retain_email_report", False)
+                        ).lower()
+                    },
+                    files={
+                        "file": (
+                            uploaded.name,
+                            uploaded.getvalue(),
+                            uploaded.type or "message/rfc822",
+                        )
+                    },
+                )
+            else:
+                report = api_call(
+                    "POST",
+                    "/api/analyze/email",
+                    json={
+                        "sender": st.session_state.get("email_sender", "").strip() or None,
+                        "subject": st.session_state.get("email_subject", "").strip() or None,
+                        "body": body_text,
+                        "research_links": st.session_state.get("email_research_links", False),
+                        "retain_report": st.session_state.get("retain_email_report", False),
+                    },
+                )
         elif mode in {"Email Intelligence", "Phone Intelligence", "Company Intelligence", "Domain Intelligence"}:
             entity = st.session_state.get("entity_value", "").strip()
             if not entity:
@@ -946,7 +1058,7 @@ def render_investigation_workspace() -> None:
         "Investigation type",
         [
             "Website", "Offer", "Message", "Payment",
-            "Email Intelligence", "Phone Intelligence",
+            "Email Scam Analysis", "Email Intelligence", "Phone Intelligence",
             "Company Intelligence", "Domain Intelligence",
         ],
         key="investigation_mode",
@@ -954,6 +1066,7 @@ def render_investigation_workspace() -> None:
         format_func={
             "Website": "Website intelligence",
             "Offer": "Job & internship verification",
+            "Email Scam Analysis": "Email scam and phishing analysis",
             "Message": "Suspicious message analysis",
             "Payment": "Payment request analysis",
             "Email Intelligence": "Email public-source lookup · authorized use only",
@@ -970,6 +1083,7 @@ def render_investigation_workspace() -> None:
     help_text = {
         "Website": "Research a public site with TinyFish Search and inspect page content with TinyFish Fetch.",
         "Offer": "Search for job-specific public evidence and fetch the exact offer URL when supplied. Company search alone does not verify a listing.",
+        "Email Scam Analysis": "Analyze pasted email content or a plain-text .eml file. Attachments are ignored and links are only researched after opt-in.",
         "Message": "Run transparent local rules. Link lookups require explicit opt-in.",
         "Payment": "Screen the request text and optionally search for merchant information.",
         "Email Intelligence": "Search for public sources associated with the submitted email. This does not verify ownership or identity.",
@@ -988,18 +1102,63 @@ def render_investigation_workspace() -> None:
             st.caption("Only submit public HTTP(S) pages you are authorized to investigate.")
         elif mode == "Offer":
             st.text_input("Company or organization", placeholder="Company name", key="job_company")
+            st.file_uploader(
+                "Offer letter · PDF, JPG, JPEG, or PNG",
+                type=["pdf", "jpg", "jpeg", "png"],
+                key="offer_letter_file",
+                max_upload_size=8,
+                help="Files are processed in memory and are not retained by the server.",
+            )
             st.text_area(
                 "Job, internship or offer details",
-                placeholder="Paste the relevant offer text. It is not stored verbatim in investigation history.",
+                placeholder="Paste offer text, or add context that could not be extracted from the uploaded file.",
                 height=150,
                 key="job_description",
             )
-            first, second = st.columns(2)
-            with first:
+            fields = st.columns(2)
+            with fields[0]:
                 st.text_input("Recruiter contact · optional", key="job_contact")
-            with second:
-                st.text_input("Exact job or internship URL · optional", placeholder="https://", key="job_url")
-            st.caption("When provided, this exact URL is fetched. Company search results alone do not verify the listing.")
+                st.text_input("Job title or internship role · optional", key="offer_job_title")
+                st.text_input("Job ID · optional", key="offer_job_id")
+                st.text_input("Salary or stipend · optional", key="offer_salary")
+                st.text_input("Offer date · optional", key="offer_date")
+            with fields[1]:
+                st.text_input("Joining date · optional", key="joining_date")
+                st.text_input("Exact offer/listing URL · optional", placeholder="https://", key="job_url")
+                st.text_input("Application URL · optional", placeholder="https://", key="application_url")
+                st.checkbox(
+                    "Retain the redacted report in my private history",
+                    key="retain_offer_report",
+                    help="The uploaded file and full extracted text are never retained.",
+                )
+            st.caption("Exact supplied URLs are fetched through TinyFish. Company search results alone do not verify a listing.")
+        elif mode == "Email Scam Analysis":
+            st.text_input("Sender address · optional", key="email_sender")
+            st.text_input("Subject · optional", key="email_subject")
+            st.file_uploader(
+                "Email file · plain-text .eml only",
+                type=["eml"],
+                key="email_file",
+                max_upload_size=8,
+                help="Attachments are ignored and never opened.",
+            )
+            st.text_area(
+                "Email content",
+                placeholder="Paste the message body, including suspicious links if present.",
+                height=170,
+                key="email_body",
+            )
+            st.checkbox(
+                "I authorize live public research for links in this email",
+                key="email_research_links",
+                help="Up to three URLs are sent for live research only when explicitly selected.",
+            )
+            st.checkbox(
+                "Retain the redacted email report in my private history",
+                key="retain_email_report",
+                help="The complete email body and uploaded file are never retained.",
+            )
+            st.caption("Email links are not opened automatically. Sender identity and email authentication remain unverified.")
         elif mode in {"Message", "Payment"}:
             st.text_area(
                 "Message or payment request",
@@ -1220,8 +1379,13 @@ def render_saved_reports() -> None:
 
 
 def render_watchlist() -> None:
-    render_topbar("Watchlist", "Keep a private list of entities for manual follow-up.")
-    st.info("Watchlist entries are stored for your account only. Automatic monitoring, scheduled checks and alerts are not configured.")
+    render_topbar("Watchlist", "Opt in to scheduled public checks for domains and organizations.")
+    status = api_call("GET", "/api/monitoring/status")
+    if status is not None:
+        if status.get("scheduler_running"):
+            st.success(f"Background monitoring is running · {status.get('scheduled_jobs', 0)} scheduled check(s).")
+        else:
+            st.warning("The scheduler is not running. Monitoring cannot be enabled in this process.")
     with st.form("watchlist-add"):
         col_value, col_kind = st.columns([2, 1])
         with col_value:
@@ -1246,19 +1410,344 @@ def render_watchlist() -> None:
     if entries is None:
         return
     if not entries:
-        render_empty_state("Your watchlist is empty", "Add an item to keep it available for manual investigations.")
+        render_empty_state("Your watchlist is empty", "Add a domain or organization for optional monitoring.")
         return
     for entry in entries:
-        col, remove = st.columns([4, 1])
-        with col:
-            with st.container(border=True):
-                st.markdown(f"**{html.escape(entry['value'])}** · {html.escape(entry['item_type'].title())}")
-                st.caption(f"Added {html.escape(entry['created_at'])} · Monitoring: manual only")
-        with remove:
+        with st.container(border=True):
+            st.markdown(f"**{html.escape(entry['value'])}** · {html.escape(entry['item_type'].title())}")
+            st.caption(f"Added {html.escape(entry['created_at'])}")
+            if entry["item_type"] in {"domain", "organization"}:
+                settings = api_call(
+                    "GET",
+                    f"/api/watchlist/{quote(entry['id'], safe='')}/monitoring",
+                )
+                if settings is not None:
+                    enabled = st.checkbox(
+                        "Enable scheduled monitoring",
+                        value=bool(settings.get("enabled")),
+                        key=f"monitor-enabled-{entry['id']}",
+                    )
+                    intervals = [6, 12, 24, 168]
+                    selected_interval = st.selectbox(
+                        "Check interval",
+                        intervals,
+                        index=intervals.index(settings.get("interval_hours", 24))
+                        if settings.get("interval_hours", 24) in intervals
+                        else 2,
+                        format_func=lambda hours: f"Every {hours} hours"
+                        if hours < 168
+                        else "Weekly",
+                        key=f"monitor-interval-{entry['id']}",
+                        disabled=not enabled,
+                    )
+                    if st.button("Save monitoring settings", key=f"save-monitor-{entry['id']}"):
+                        updated = api_call(
+                            "PUT",
+                            f"/api/watchlist/{quote(entry['id'], safe='')}/monitoring",
+                            json={
+                                "enabled": enabled,
+                                "interval_hours": selected_interval,
+                            },
+                        )
+                        if updated is not None:
+                            st.success(
+                                "Monitoring schedule saved."
+                                if updated.get("job_scheduled")
+                                else "Monitoring paused."
+                            )
+                            st.rerun()
+                    if settings.get("enabled") and settings.get("job_scheduled"):
+                        st.caption(f"Next scheduled check: {settings.get('next_run_time', 'scheduled')}")
+                    if st.button("Check now", key=f"check-watch-{entry['id']}"):
+                        checked = api_call(
+                            "POST",
+                            f"/api/watchlist/{quote(entry['id'], safe='')}/check",
+                        )
+                        if checked is not None:
+                            if checked.get("status") == "completed":
+                                st.success("Manual check completed.")
+                                st.json(checked.get("changes", {}))
+                            else:
+                                st.warning("The check could not be completed; no verification is claimed.")
+                    checks = api_call(
+                        "GET",
+                        f"/api/watchlist/{quote(entry['id'], safe='')}/checks",
+                        params={"limit": 5},
+                    )
+                    if checks:
+                        with st.expander("Recent monitoring checks"):
+                            for check in checks:
+                                st.markdown(
+                                    f"**{check['checked_at']}** · {check['status']}"
+                                )
+                                if check.get("changes"):
+                                    st.json(check["changes"])
+            else:
+                st.caption("This entry is saved for manual follow-up; scheduled checks support domains and organizations.")
             if st.button("Remove", key=f"remove-watch-{entry['id']}"):
                 deleted = api_call("DELETE", f"/api/watchlist/{quote(entry['id'], safe='')}")
                 if deleted is not None:
                     st.rerun()
+
+
+def render_monitoring_alerts() -> None:
+    render_topbar("Monitoring alerts", "Private in-app alerts created by scheduled watchlist checks.")
+    alerts = api_call("GET", "/api/monitoring/alerts")
+    if alerts is None:
+        return
+    if not alerts:
+        render_empty_state("No monitoring alerts", "Alerts appear when an opted-in check detects a meaningful change.")
+        return
+    for alert in alerts:
+        with st.container(border=True):
+            st.markdown(f"**{html.escape(alert['value'])}**")
+            st.write(alert["message"])
+            st.caption(f"Detected {alert['created_at']} · {'Read' if alert['read_at'] else 'Unread'}")
+            if not alert["read_at"] and st.button("Mark as read", key=f"read-alert-{alert['id']}"):
+                marked = api_call(
+                    "POST",
+                    f"/api/monitoring/alerts/{quote(alert['id'], safe='')}/read",
+                )
+                if marked is not None:
+                    st.rerun()
+
+
+def render_batch_investigation() -> None:
+    render_topbar("Batch URL investigation", "Each URL is investigated independently; failed entries do not stop the rest.")
+    st.caption("Submit at most 10 URLs. Duplicate canonical URLs are only processed once.")
+    urls_text = st.text_area(
+        "URLs · one per line",
+        key="batch_urls",
+        height=150,
+        placeholder="https://example.com\nhttps://careers.example.org/jobs/123",
+    )
+    csv_file = st.file_uploader(
+        "Or upload a CSV with a URL column",
+        type=["csv"],
+        key="batch_csv",
+        max_upload_size=1,
+    )
+    if st.button("Investigate batch", type="primary"):
+        urls = [line.strip() for line in urls_text.splitlines() if line.strip()]
+        if csv_file is not None:
+            raw_csv = csv_file.getvalue()
+            if len(raw_csv) > 1024 * 1024:
+                st.error("CSV files must be 1 MB or smaller.")
+                return
+            try:
+                rows = list(csv.reader(io.StringIO(raw_csv.decode("utf-8-sig"))))
+            except (UnicodeDecodeError, csv.Error):
+                st.error("The CSV must be valid UTF-8 text.")
+                return
+            if rows:
+                header = [value.strip().casefold() for value in rows[0]]
+                url_column = header.index("url") if "url" in header else 0
+                start = 1 if "url" in header else 0
+                for row in rows[start:]:
+                    if len(row) > url_column and row[url_column].strip():
+                        urls.append(row[url_column].strip())
+        if not urls:
+            st.warning("Enter or upload at least one URL.")
+        elif len(urls) > 10:
+            st.error("Batch size is limited to 10 unique URL inputs.")
+        else:
+            result = api_call(
+                "POST",
+                "/api/investigations/batch",
+                json={"urls": urls},
+                timeout=360,
+            )
+            if result is not None:
+                st.session_state["batch_result"] = result
+
+    result = st.session_state.get("batch_result")
+    if not result:
+        return
+    st.markdown("#### Batch summary")
+    st.json(result["summary"])
+    export = io.StringIO()
+    writer = csv.writer(export)
+    writer.writerow(["submitted_url", "status", "risk_score", "risk_category", "error"])
+    for item in result["results"]:
+        report = item.get("report", {})
+        writer.writerow(
+            [
+                item.get("submitted_url", ""),
+                item.get("status", ""),
+                report.get("risk_score", ""),
+                report.get("risk_category", ""),
+                item.get("error", ""),
+            ]
+        )
+    st.download_button(
+        "Download batch CSV",
+        export.getvalue(),
+        file_name="scamshield-batch-results.csv",
+        mime="text/csv",
+    )
+    for item in result["results"]:
+        label = f"{item.get('status', 'unknown').title()} · {item.get('submitted_url', 'URL')}"
+        with st.expander(label):
+            if item.get("status") == "completed":
+                render_report(item["report"])
+            elif item.get("status") == "duplicate":
+                st.info(f"Duplicate of {item.get('duplicate_of', 'another submitted URL')}.")
+            else:
+                st.error(item.get("error", "This URL could not be investigated."))
+
+
+def render_screenshot_analyzer() -> None:
+    render_topbar("Screenshot / OCR analysis", "Extract text locally, then screen it with existing rules.")
+    upload = st.file_uploader(
+        "Screenshot · JPG, JPEG, or PNG",
+        type=["jpg", "jpeg", "png"],
+        key="screenshot_file",
+        max_upload_size=8,
+    )
+    if upload is not None:
+        image_bytes = upload.getvalue()
+        st.image(image_bytes, caption="Original screenshot", width="stretch")
+        context = st.selectbox(
+            "Analyze as",
+            ["message", "job", "payment"],
+            format_func=str.title,
+            key="screenshot_context",
+        )
+        retain = st.checkbox(
+            "Retain the redacted report in my private history",
+            key="retain_screenshot_report",
+        )
+        if st.button("Extract and analyze screenshot", type="primary"):
+            report = api_call(
+                "POST",
+                "/api/analyze/screenshot",
+                files={"file": (upload.name, image_bytes, upload.type or "image/png")},
+                data={"context": context, "retain_report": str(retain).lower()},
+            )
+            if report is not None:
+                st.session_state["active_report"] = report
+                st.session_state["active_report_mode"] = "Screenshot"
+    report = st.session_state.get("active_report")
+    if report and report.get("investigation_type") == "screenshot":
+        if report.get("ocr_confidence") is not None:
+            st.metric("OCR mean word confidence", f"{report['ocr_confidence']}/100")
+            st.caption(report.get("confidence_method", "This is not a probability of correctness."))
+        with st.expander("Extracted text · verify against the original image"):
+            st.text(report.get("extracted_text", ""))
+        render_report(report)
+
+
+def render_qr_scanner() -> None:
+    render_topbar("QR code scanner", "Decode first. Inspect the destination before choosing any investigation.")
+    upload = st.file_uploader(
+        "QR image · JPG, JPEG, or PNG",
+        type=["jpg", "jpeg", "png"],
+        key="qr_file",
+        max_upload_size=8,
+    )
+    if upload is not None:
+        image_bytes = upload.getvalue()
+        st.image(image_bytes, caption="Original QR image", width="stretch")
+        if st.button("Decode QR code", type="primary"):
+            report = api_call(
+                "POST",
+                "/api/analyze/qr",
+                files={"file": (upload.name, image_bytes, upload.type or "image/png")},
+            )
+            if report is not None:
+                st.session_state["qr_scan_report"] = report
+    report = st.session_state.get("qr_scan_report")
+    if not report:
+        return
+    st.markdown("#### Decoded content · not opened")
+    st.code(report.get("decoded_content", ""), language=None)
+    st.metric("Rule-based screening score", f"{report.get('risk_score', 0)}/100")
+    st.caption(report.get("risk_category", "Unable to assess"))
+    if report.get("indicators"):
+        for indicator in report["indicators"]:
+            st.warning(
+                f"{indicator.get('name')}: {indicator.get('explanation')} "
+                f"(+{indicator.get('score_contribution', 0)})"
+            )
+    for index, url in enumerate(report.get("decoded_urls", [])):
+        st.code(url, language=None)
+        if st.button("Prepare an explicit website investigation", key=f"qr-investigate-{index}"):
+            st.session_state["website_url"] = url
+            st.session_state["investigation_mode"] = "Website"
+            st.session_state["pending_navigation"] = "URL scanner"
+            st.rerun()
+    st.info("No QR destination is opened or fetched automatically. The website scanner will apply public-URL validation.")
+    if report.get("missing_information"):
+        st.caption("Limitations: " + " ".join(report["missing_information"]))
+
+
+def render_ai_assistant() -> None:
+    render_topbar("Optional AI analysis", "Gemini provides supplementary interpretations; it never changes the rule-based score.")
+    records = api_call("GET", "/api/history", params={"limit": 100})
+    if records is None:
+        return
+    option = st.radio(
+        "Analysis input",
+        ["Existing report", "Text"],
+        horizontal=True,
+        key="ai_input_mode",
+    )
+    request: dict[str, str] = {}
+    if option == "Existing report":
+        if not records:
+            st.info("No saved investigations are available yet. Run an investigation first.")
+            return
+        labels = {
+            row["id"]: f'{row["investigation_type"].title()} · {row["target"][:70]}'
+            for row in records
+        }
+        selected_id = st.selectbox(
+            "Select a report",
+            list(labels),
+            format_func=labels.get,
+            key="ai_report_id",
+        )
+        request["investigation_id"] = selected_id
+    else:
+        text = st.text_area(
+            "Text to interpret",
+            key="ai_text",
+            max_chars=10000,
+            height=180,
+        )
+        if text.strip():
+            request["text"] = text.strip()
+    consent = st.checkbox(
+        "I authorize sending the selected report/text to the configured Gemini provider",
+        key="ai_external_consent",
+    )
+    if st.button("Request AI interpretation", type="primary", disabled=not consent or not request):
+        result = api_call("POST", "/api/analyze/ai", json=request)
+        if result is not None:
+            st.session_state["ai_result"] = result
+    result = st.session_state.get("ai_result")
+    if result:
+        st.warning(result["label"])
+        st.markdown("**Assessment**")
+        st.write(result["assessment"])
+        if result.get("interpretations"):
+            st.markdown("**AI-generated interpretations**")
+            for item in result["interpretations"]:
+                st.write(f"- {item}")
+        if result.get("unknowns"):
+            st.markdown("**Unknowns**")
+            for item in result["unknowns"]:
+                st.write(f"- {item}")
+        st.caption(
+            f"Original score: {result.get('original_risk_score')} · "
+            f"{result.get('original_risk_category')} · unchanged"
+        )
+        if result.get("cited_evidence"):
+            st.markdown("**Supplied evidence cited by the model**")
+            for item in result["cited_evidence"]:
+                render_evidence_card(item, int(item.get("index", 0)) + 1)
+        for limitation in result.get("limitations", []):
+            st.caption(limitation)
 
 
 def render_integrations() -> None:
@@ -1273,13 +1762,15 @@ def render_integrations() -> None:
         "virustotal": "VirusTotal",
         "ocr": "Image OCR",
         "qr_scanning": "QR scanning",
+        "watchlist_monitoring": "Watchlist scheduler",
         "speech_to_text": "Speech-to-text",
     }
     for key, label in names.items():
         service = data.get(key, {})
         configured = bool(service.get("configured"))
         with st.container(border=True):
-            state = "Credentials configured" if configured else "Not configured"
+            status = str(service.get("status", "unknown")).replace("_", " ")
+            state = "Available" if configured else status.title()
             dot_class = "online" if configured else "offline"
             st.markdown(
                 f'<span class="status-dot {dot_class}"></span>&nbsp;'
@@ -1288,8 +1779,8 @@ def render_integrations() -> None:
             )
             if key.startswith("tinyfish_") and configured:
                 st.caption("Configuration is present. This status does not perform a live health request.")
-            elif service.get("status") == "optional_provider_not_integrated":
-                st.caption("An API key alone does not activate this provider; the integration is not implemented.")
+            elif service.get("status") == "optional_provider_not_configured":
+                st.caption("Optional provider is not configured. Rule-based analysis remains available.")
             elif service.get("status") == "not_implemented":
                 st.caption("This capability is not implemented.")
 
@@ -1448,21 +1939,9 @@ def render_timeline() -> None:
 def render_unavailable_module(page: str) -> None:
     render_topbar(page, "Capability status for this local ScamShield installation.")
     unavailable: dict[str, tuple[str, str]] = {
-        "Screenshot analyzer": (
-            "Local OCR is not installed or integrated.",
-            "No image is uploaded or parsed in this build. Install and validate a local OCR engine before enabling screenshot/document analysis.",
-        ),
-        "QR scanner": (
-            "QR decoding is not implemented.",
-            "Do not upload an image expecting a decoded destination. When implemented, decoded URLs must be displayed for review and never opened automatically.",
-        ),
-        "AI security assistant": (
-            "No LLM provider is integrated.",
-            "The existing transparent rule-based analyzers remain available. No Gemini key is read or used, and no fabricated AI explanations are shown.",
-        ),
         "Scam alerts": (
             "Community alerts and moderation are not implemented.",
-            "There is no public submission feed or review workflow. Unverified reports are not presented as confirmed fraud.",
+            "There is no public submission feed or review workflow. Private watchlist monitoring alerts are available in the Monitoring alerts page.",
         ),
     }
     heading, message = unavailable[page]
@@ -1779,9 +2258,9 @@ def render_public_page(page: str) -> None:
             "Frequently asked questions",
             "What the current build does—and does not—do.",
             [
-                ("Does it use AI?", "No LLM provider is integrated in this build. Existing message/job analysis uses explicit local rules."),
+                ("Does it use AI?", "Optional Gemini interpretations are available when configured and explicitly requested. They are labeled as AI-generated and never change rule-based scores."),
                 ("Is a low score a safety guarantee?", "No. Scores reflect only available configured indicators."),
-                ("Are watchlist checks automatic?", "No. Watchlist items are saved for manual follow-up only."),
+                ("Are watchlist checks automatic?", "Only domains and organizations you explicitly opt in to monitor are checked on the configured schedule while the backend is running."),
                 ("Can I recover a forgotten password by email?", "Not currently. No email delivery service is configured."),
             ],
         ),
@@ -1822,10 +2301,10 @@ def render_public_page(page: str) -> None:
             ("job-shield.svg", "Recruitment offer screening aid"),
             ("message-warning.svg", "Message warning-pattern screening"),
             ("payment-shield.svg", "Payment request screening"),
-            ("qr-security.svg", "QR scanning capability illustration; decoder is not implemented"),
-            ("document-scan.svg", "Screenshot OCR capability illustration; OCR is not implemented"),
+            ("qr-security.svg", "Decode and inspect QR destinations before explicit investigation"),
+            ("document-scan.svg", "Local OCR screening for uploaded screenshots"),
             ("evidence-graph.svg", "Evidence relationship graph illustration"),
-            ("assistant.svg", "Assistant illustration; LLM assistant is not implemented"),
+            ("assistant.svg", "Optional evidence-grounded Gemini interpretation"),
         ]
         cols = st.columns(4)
         for col, (asset, label) in zip(cols * 2, visuals):
@@ -1851,11 +2330,10 @@ def render_public_page(page: str) -> None:
 def render_auth_portal() -> None:
     render_topbar("Secure account access", "Create a private workspace or sign in to your existing account.")
     modes = ["Sign in", "Create account"]
-    default_mode = st.session_state.get("auth_mode", "Sign in")
+    st.session_state.setdefault("auth_mode", "Sign in")
     mode = st.radio(
         "Account action",
         modes,
-        index=modes.index(default_mode) if default_mode in modes else 0,
         horizontal=True,
         label_visibility="collapsed",
         key="auth_mode",
@@ -1920,7 +2398,7 @@ def main() -> None:
         render_overview()
     elif selected in {
         "New investigation", "URL scanner", "Message scanner",
-        "Job scam detector", "Payment scam checker",
+        "Job scam detector", "Email scam detection", "Payment scam checker",
         "Email intelligence", "Phone intelligence",
         "Company intelligence", "Domain intelligence",
     }:
@@ -1928,6 +2406,7 @@ def main() -> None:
             "URL scanner": "Website",
             "Message scanner": "Message",
             "Job scam detector": "Offer",
+            "Email scam detection": "Email Scam Analysis",
             "Payment scam checker": "Payment",
             "Email intelligence": "Email Intelligence",
             "Phone intelligence": "Phone Intelligence",
@@ -1949,6 +2428,16 @@ def main() -> None:
         render_saved_reports()
     elif selected == "Watchlist":
         render_watchlist()
+    elif selected == "Scam alerts":
+        render_monitoring_alerts()
+    elif selected == "Batch URL investigation":
+        render_batch_investigation()
+    elif selected == "Screenshot analyzer":
+        render_screenshot_analyzer()
+    elif selected == "QR scanner":
+        render_qr_scanner()
+    elif selected == "AI security assistant":
+        render_ai_assistant()
     elif selected == "Integrations":
         render_integrations()
     elif selected in {"Profile", "Settings"}:
@@ -1957,8 +2446,6 @@ def main() -> None:
         render_admin()
     elif selected == "Risk methodology":
         render_risk_methodology()
-    elif selected in {"Screenshot analyzer", "QR scanner", "AI security assistant", "Scam alerts"}:
-        render_unavailable_module(selected)
     elif selected == "Help & support":
         render_help()
     else:

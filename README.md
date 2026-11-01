@@ -1,8 +1,9 @@
 # ScamShield AI
 
-ScamShield AI is a FastAPI and Streamlit scam-screening app. Website and offer
-research use TinyFish Search and Fetch. Text analysis is deterministic,
-explainable rule-based screening; no LLM provider is configured.
+ScamShield AI is a FastAPI and Streamlit scam-screening app. Website, job and
+offer research use TinyFish Search and Fetch. Local deterministic rules provide
+the primary explainable screening; optional Gemini interpretations are
+available when explicitly configured and authorized.
 
 ## Windows setup
 
@@ -19,6 +20,9 @@ notepad .env
 
 Set `TINYFISH_API_KEY` in `.env` locally. Do not share or commit that file. If
 `.env` already exists, preserve it and edit it without copying over it.
+Optional environment variables are `GEMINI_API_KEY`, `GEMINI_MODEL`, and
+`TESSERACT_CMD`. Gemini analysis requires explicit user consent; email and
+offer reports are retained only when the user explicitly opts in.
 Public registration always creates a regular account. To provision an
 administrator, register the account first, stop the services, then update its
 role directly in the local database using the operator command in the
@@ -57,6 +61,9 @@ Run tests:
 python -m unittest discover -s tests -v
 ```
 
+Deployment guidance: [DEPLOYMENT.md](./DEPLOYMENT.md). User workflows:
+[USER_GUIDE.md](./USER_GUIDE.md).
+
 The backend listens at `http://127.0.0.1:8000`; the dashboard is normally at
 `http://localhost:8501`. Set `SCAMSHIELD_API_URL` if the backend is elsewhere.
 Set `SCAMSHIELD_DATABASE_PATH` to choose another SQLite file.
@@ -92,11 +99,30 @@ Set `SCAMSHIELD_DATABASE_PATH` to choose another SQLite file.
   provisioned `admin` database role. Public registration cannot grant admin
   access based on a claimed email address.
 - Integration status reports configuration without returning key
-  material. TinyFish status means credentials are configured, not that a live
-  request has been tested. Watchlist entries support manual follow-up only;
-  they do not run scheduled monitoring or generate alerts.
-- Screenshot OCR, QR decoding, Gemini assistant, VirusTotal, Scam Alerts, and
-  community moderation pages are explicitly marked unavailable, not simulated.
+  material. TinyFish status means credentials are configured, not a continuous
+  live health check; provider availability can change after a smoke test.
+- Opt-in watchlist monitoring runs on the FastAPI process scheduler for
+  domains and organizations at 6, 12, 24 or 168-hour intervals. Changes create
+  private in-app alerts; email alerts are not configured.
+- Offer-letter verification accepts pasted text, text PDFs and JPG/JPEG/PNG
+  images. Extracted details are treated as claims, not authenticated facts;
+  reports are not retained unless the user opts in.
+- Email scam analysis accepts pasted text or `.eml` files. Plain-text bodies
+  only are read; attachments are ignored. Link research requires explicit
+  opt-in and does not authenticate sender identity.
+- Screenshot analysis uses local Tesseract OCR; QR decoding uses local OpenCV.
+  QR content and destinations are displayed before the user chooses a
+  separate website investigation. Uploads and extracted data are not retained
+  by default.
+- Batch URL investigation accepts up to 10 inputs, handles duplicates and
+  individual failures, and supports CSV import/export without mixing reports.
+  Batch submissions are limited to three per user per minute.
+- Optional Gemini analysis is controlled by `GEMINI_API_KEY` and
+  `GEMINI_MODEL`. It returns clearly labeled interpretations tied only to
+  supplied evidence; it does not alter the rule-based score. No AI request is
+  made unless a signed-in user explicitly asks for one.
+- VirusTotal, speech-to-text, public community alerts/moderation and email
+  notifications are not implemented.
 - Scam DNA is a transparent mapping of existing report indicators to possible
   social-engineering stages; it does not claim to reconstruct attacker intent.
 - Website investigation combines a TinyFish Search query with TinyFish Fetch
@@ -110,10 +136,10 @@ Set `SCAMSHIELD_DATABASE_PATH` to choose another SQLite file.
 - Recognized third-party recruitment-platform redirects (including Greenhouse,
   Lever, Ashby, Workday, SmartRecruiters, iCIMS, Jobvite, Indeed, LinkedIn,
   ZipRecruiter and Wellfound) can be checked for listing-detail consistency
-  without adding risk points solely for platform hosting. Unrecognized
-  cross-domain redirects are recorded and excluded from listing verification
-  and page-content scoring. Platform or page consistency does not verify the
-  employer's authority or offer authenticity.
+  without adding risk points solely for platform hosting. Redirects within the
+  same registrable domain can also be checked; unrelated cross-domain
+  destinations are recorded and excluded. Platform or page consistency does
+  not verify the employer's authority or offer authenticity.
 - Recruiter email domains are screened for public email providers and
   differences from the offer host; a host mismatch is informational only and
   adds no risk points because legitimate employers may use external recruiting
@@ -140,6 +166,9 @@ Set `SCAMSHIELD_DATABASE_PATH` to choose another SQLite file.
   low-weight signal.
 - Reports explain each matched indicator and score contribution. Missing
   information adds no risk points.
+- Uploaded files are processed in memory with size/type/content, image-pixel,
+  PDF-page and OCR-time limits. The application does not provide antivirus
+  scanning; do not upload documents you are not authorized to process.
 - TinyFish Search/Fetch server logs record provider, operation, request outcome,
   HTTP response status when available, duration, result count and per-URL error
   count. Logs do not include credentials or upstream response bodies. Provider
@@ -147,12 +176,18 @@ Set `SCAMSHIELD_DATABASE_PATH` to choose another SQLite file.
   report.
 - Website/job search evidence is matched to the investigated domain or company;
   unrelated results remain visible but are excluded from risk scoring.
+- Website warning results must directly allege misconduct by the target domain;
+  first-party scam-awareness pages and warnings about brand impersonation remain
+  evidence only. Multiple related allegations contribute at most one
+  low-weight signal for a website or job report.
 - Evidence records identify TinyFish Search or TinyFish Fetch as the provider;
   when the same URL is returned by both, the combined source retains both
   attributions.
-- Evidence URLs are canonicalized for duplicate detection. A Fetch result whose
-  final host differs from the submitted target is labeled and excluded from
-  scoring; this does not prevent or control redirects followed by TinyFish.
+- Evidence URLs are canonicalized for duplicate detection. A website Fetch
+  result whose final host differs from the submitted target is labeled and
+  excluded from scoring. Job listings may be checked after same-domain-family
+  or recognized-platform redirects, but remain explicitly unauthenticated.
+  This does not prevent or control redirects followed by TinyFish.
 - SQLite stores investigation reports and supports history/retrieval. Raw
   message/payment submissions and offer descriptions are not persisted;
   user-submitted-text snippets are redacted in stored records.
@@ -216,15 +251,29 @@ simulated. TinyFish outages are displayed as errors or partial research states;
 they are not replaced with sample results. No public/shareable report links
 are created.
 
-## Scope and optional capabilities
+## Optional configuration and limitations
 
-The current release does not integrate Gemini or VirusTotal, and does not
-implement image OCR, QR decoding, voice transcription, scheduled watchlist
-checks, alerts, moderation workflows, or public-facing shareable reports.
-Adding a provider key alone does not activate those features. The integrations
-page marks these capabilities as unavailable/not implemented rather than
-returning simulated results. A dedicated email-password-reset workflow is also
-unavailable because no email delivery provider is configured.
+The optional Gemini provider reads `GEMINI_API_KEY` and `GEMINI_MODEL` from the
+backend environment. Local OCR uses Tesseract; set `TESSERACT_CMD` if its
+executable is not discoverable on `PATH`. QR decoding is local and does not
+need credentials. The integrations page reports readiness without displaying
+credentials and does not make a live provider health request.
+
+Uploads are limited to 8 MB, images to 20 megapixels, PDFs to 30 pages, and
+OCR work to 15 seconds. Only text-based PDFs are supported for offer
+extraction; image-only PDFs must be converted to a supported screenshot. Email
+attachments are ignored. OCR can misread text and its confidence is not an
+accuracy probability. There is no malware scanner, legal authenticity check,
+email-header authentication analysis, guaranteed monitor delivery, or email
+notification service.
+
+Watchlist scheduling runs in-process. Scheduled checks pause while the
+application is stopped and are re-registered from SQLite when FastAPI starts.
+Monitoring requires a reachable TinyFish provider and public URL validation;
+company checks collect public sources but do not assign a fraud score. TinyFish
+remote redirect destinations cannot be fully controlled by this application.
+Email-based account recovery, voice scam analysis, public community alerts,
+and shareable reports remain unavailable.
 
 The linked YouTube reference was opened, but its player displayed “An error
 occurred. Please try again later.” No video appearance was inferred or copied.

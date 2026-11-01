@@ -1,41 +1,44 @@
 # ScamShield AI feature matrix
 
-Status reflects the checked-in implementation and tests, not intended behavior.
-“Integration unavailable” means a UI or service boundary may exist, but the
-capability is not activated or a live provider check has not been performed.
+Status reflects the current implementation and tests, not intended behavior.
+Optional provider availability and live checks are stated separately.
 
 | Area | Capability | Status | Evidence / limitation |
 |---|---|---|---|
-| Core services | FastAPI, Streamlit, SQLite, Windows `.\start.ps1` | Implemented and tested | Backend route tests, Streamlit AppTest, and a fresh launcher smoke test with both HTTP services returning 200. |
+| Core services | FastAPI, Streamlit, SQLite, Windows `.\start.ps1` | Implemented and tested | Backend route tests and Streamlit AppTest; the final launcher smoke result is recorded below. |
 | Accounts | Registration, login, logout, scrypt password hashes, 12-hour hashed sessions, profile/password change, account deletion | Implemented and tested | Backend tests cover auth, revocation, account ownership and server-side admin role checks. Public signup always creates a regular user; an operator must provision administrator roles directly in SQLite. |
 | Accounts | Session listing/revocation UI, password reset and email verification | Not implemented | No session-management routes or configured email delivery workflow. |
 | Authorization | Account-scoped investigations, saved reports, watchlist and deletion | Implemented and tested | Backend tests verify cross-account isolation and ownership checks. |
 | Abuse controls | Sign-in attempt limit | Partially implemented | Limit is per email over 15 minutes; no general API or source-IP rate limiter. |
-| Investigations | Website URL checks using TinyFish Search and Fetch | Implemented and tested | Request formats and error handling are covered by mocked API tests; no live provider call was made for this phase. |
-| Job verification | Job-specific Search query, exact submitted-offer URL Fetch, structured listing extraction | Implemented and tested | Mocked tests cover exact URL/final URL, title, company, job ID, description/application fields, mismatch states, generic search isolation, and provider errors. Reports attribute Search and Fetch sources. |
-| Job verification | Recognized third-party recruitment platform handling | Implemented and tested | Known platform hosts can be checked for listing-detail consistency after redirects. Platform hosting never lowers risk or establishes employer authority. |
+| Investigations | Website URL checks using TinyFish Search and Fetch | Implemented and tested | Mocked API tests cover request formats and errors. Live smoke checks in the current environment returned Search results and fetched Microsoft, Amazon India, and Google homepages; live availability is not guaranteed. |
+| Job verification | Job-specific Search query, exact submitted-offer URL Fetch, structured listing extraction | Implemented and tested | Mocked tests cover exact URL/final URL, title, company, job ID, description/application fields, mismatch states, generic search isolation, and provider errors. A live Amazon Careers URL matched its final URL, title, and job ID; employer authority remains unverified. |
+| Job verification | Redirected careers-page handling | Implemented and tested | Known platform hosts and same-domain-family redirects can be checked for listing-detail consistency. A live Google Careers URL redirected to `www.google.com`, but returned a generic search page with no role details; that listing remained insufficiently verified. Redirects never establish employer authority. |
 | Job verification | Official company-domain / recruiter identity verification | Not implemented | No authoritative company-domain registry or recruiter identity provider is configured. Reports explicitly state that page text and email-domain resemblance do not verify ownership or identity. |
 | Job verification | Rule-based fee, placement, sensitive-data, urgency, unusual hiring promises and recruiter-domain signals | Implemented and tested | Each warning is an explainable inference with supporting evidence. Missing pages add no points; recruiter/offer host mismatch adds none. A low job score is classified as “Insufficient evidence” unless warning signals justify a higher class. |
 | Investigations | Message and payment request analysis | Implemented and tested | Deterministic English-language rules; merchant search allegations are only scored when the result mentions the requested merchant, and repeated search results contribute at most one 8-point allegation signal. No LLM, financial account validation, or multilingual model. |
 | Investigations | Email, phone, company and domain public-search records | Implemented and tested | Consent is required for email/phone lookups. Results are evidence-only and are not scored or treated as identity verification. |
 | Evidence quality | Exact target-domain/company relevance gate, URL canonicalization, duplicate suppression | Implemented and tested | Irrelevant results are retained with `unrelated_not_scored`; only related warning results can add an allegation indicator. |
-| Evidence quality | Redirect awareness | Partially implemented | Redirects to recognized job platforms are recorded and may be checked for listing consistency; other cross-domain content is excluded. The app cannot control TinyFish’s remote redirect policy or prevent a redirect before it occurs. |
+| Evidence quality | Redirect awareness | Partially implemented | Recognized job platforms and same-domain-family redirects may be checked for job-detail consistency; unrelated cross-domain content is excluded. The app cannot control TinyFish’s remote redirect policy or prevent a redirect before it occurs. |
 | Evidence quality | Source credibility, publication-date/freshness scoring, limited subdomain impersonation heuristic, conflicting-source reconciliation | Partially implemented | A company brand appearing only in an unverified subdomain adds an explainable warning; this heuristic is not an authoritative domain check and does not cover all lookalikes. |
-| Risk analysis | Explainable rule scoring and separation of public allegations from rule inferences | Implemented and tested | Missing information adds no points. A public allegation is labeled and contributes only a low-weight signal; it is not proof of wrongdoing. |
-| AI analysis | Gemini/other LLM evidence-grounded analysis | Not implemented | No LLM analysis path is integrated. A configured Gemini key is not used; current reports identify deterministic analysis. |
-| Threat providers | TinyFish Search/Fetch configuration display | Partially implemented | Credential presence is displayed, not a live health check; last-success time and connection failure reason are not recorded. |
+| Risk analysis | Explainable rule scoring and separation of public allegations from rule inferences | Implemented and tested | Missing information adds no points. Website allegations must directly accuse the target; first-party warnings and brand-impersonation advisories are not scored. Multiple related allegations contribute at most one low-weight signal per website or job report. |
+| Offer documents | Pasted text, PDF and image offer extraction and screening | Implemented and tested | In-memory extraction supports text PDFs and JPG/JPEG/PNG OCR. Extracted claims are not authenticated; report retention is opt-in. No antivirus or document-signature verification is provided. |
+| Email analysis | Pasted email and `.eml` analysis | Implemented and tested | Rules identify phishing, payment, credential, OTP and attachment-name indicators. `.eml` attachments are ignored. Link research is opt-in; headers and sender identity are not authenticated. |
+| AI analysis | Optional Gemini evidence-grounded interpretation | Implemented; live provider not tested | Requires `GEMINI_API_KEY`; structured response validation and evidence-index checks are enforced. AI text is labeled as interpretation and cannot alter the rule-based score. |
+| Threat providers | TinyFish Search/Fetch configuration display | Implemented; live smoke-tested | Presence is displayed without key material. Live Search returned 10 results; live Fetch of the exact Amazon job URL returned the submitted final URL, matching title/job ID, and no provider errors. This is not a continuous health check. |
 | Threat providers | Google Safe Browsing, VirusTotal, URLhaus, PhishTank, AbuseIPDB, WHOIS, DNS and SSL enrichment | Not implemented | No provider adapters or API requests are present. |
-| Local tools | QR decoding, screenshot/document OCR, voice scam analysis | Not implemented | Navigation presents unavailable states; corresponding decoder/OCR/transcription modules are absent. |
-| Investigation tools | Batch URL analysis and independently controlled redirect-chain inspection | Not implemented | No batch workflow or client-controlled redirect fetcher. |
+| Local tools | QR decoding and screenshot OCR | Implemented and tested | OpenCV QR decoding is tested with generated QR images. A local Tesseract smoke test extracted the test phrase and returned confidence. QR destinations are displayed before the user explicitly prepares a website investigation. OCR confidence is not an accuracy guarantee. |
+| Local tools | Voice scam analysis | Not implemented | No speech transcription or audio-analysis integration. |
+| Investigation tools | Batch URL analysis and CSV import/export | Implemented and tested | Each URL is processed independently, canonical duplicates are skipped, inputs are capped at 10, requests are limited to three per user per minute, and per-URL failures do not abort the batch. |
+| Investigation tools | Independently controlled redirect-chain inspection | Not implemented | TinyFish performs remote Fetch and redirect behavior is controlled by the provider; this application cannot guarantee every redirect destination. |
 | Reports | PDF generation/download, CSV history export, saved reports, filters and comparisons | Implemented and tested | PDF is generated from saved report data; history is account-scoped. |
-| Reports | Secure share links and user notifications/alert history | Not implemented | No share-token/expiry workflow or notification store. |
+| Reports | Secure share links and email notifications | Not implemented | No share-token/expiry workflow or email delivery provider. |
 | Dashboard | Database-backed counts, recent records, risk distribution and activity chart | Implemented and tested | Empty database uses an empty state; public-source evidence-only records are excluded from scored-risk charts. |
-| Dashboard | Watchlist manual management and visual history/timeline/evidence graph | Implemented and tested | These summarize stored account data; no scheduled checks are implied. |
-| Monitoring | Scheduled watchlist checks, risk-change alerts and email alerts | Not implemented | No scheduler, persistent job queue or mail provider. |
+| Dashboard | Watchlist manual management and visual history/timeline/evidence graph | Implemented and tested | User-owned watchlist entries and investigation history are isolated by account. |
+| Monitoring | Opt-in scheduled watchlist checks and in-app alerts | Implemented and tested | APScheduler runs in-process, settings/check history are stored in SQLite, and lifecycle and owner access are tested. Checks pause while the API is stopped; no email alerts are sent. |
 | Security | Password hashing, hashed sessions, role enforcement, parameterized SQL, API input constraints | Implemented and tested | Covered in current backend tests. |
 | Security | Initial-target SSRF validation | Implemented and tested | Rejects non-HTTP(S), credentialed, local and non-global IP destinations after DNS resolution. Remote TinyFish redirect destinations cannot be prevalidated or guaranteed by this app. |
-| Security | Upload validation, malware scanning and audit-log history | Not implemented | No file-upload endpoint or structured audit-trail store. |
-| UI | White/cobalt/lime design and public/account/workspace views | Implemented and partially tested | Streamlit AppTest plus responsive CSS inspection; no comprehensive mobile-browser or accessibility test matrix. Interactive pages retain explicit unavailable states for missing integrations. |
+| Security | Upload validation and in-memory file processing | Implemented and tested | 8 MB size cap, extension/content checks, 20-megapixel cap, PDF page cap, OCR timeout, and attachment-ignore behavior. Malware scanning and audit-log history are not implemented. |
+| UI | White/cobalt/lime design and new advanced workspace screens | Implemented and AppTest-checked | Streamlit AppTest covers authentication and workspace; no comprehensive mobile-browser or accessibility test matrix. |
 
 ## Phase 1 audit notes
 
@@ -72,8 +75,9 @@ capability is not activated or a live provider check has not been performed.
   diagnostics passed; Streamlit AppTest covered public/auth views and 27
   workspace routes; a fresh `.\start.ps1` smoke test returned HTTP 200 from
   FastAPI and Streamlit. Services were then stopped cleanly.
-- Live TinyFish Search/Fetch calls were not made, so real-provider success is
-  not claimed.
+- At the time of this earlier audit, live TinyFish Search/Fetch calls were not
+  made. See the current advanced-feature validation below for this run's live
+  smoke-test result.
 
 ## Job verification improvements
 
@@ -98,10 +102,44 @@ capability is not activated or a live provider check has not been performed.
   request, including requests that later fail.
 - TinyFish diagnostics log provider/operation, request status, response status,
   duration, result count, and per-URL error count without keys or response
-  bodies. Live Search/Fetch behavior was mocked for these tests; no live
-  provider verification was performed.
-- Final validation: all 57 tests passed, including mocked listing, internship,
-  impersonation-like domain, registration-fee, generic-search, unavailable URL,
-  recruiter-domain, evidence-isolation and TinyFish-failure cases. Streamlit
-  AppTest verified the job report fields and stale-report clearing; Pylance
-  diagnostics were empty for changed Python files.
+  bodies. Live service smoke tests below are separate from mocked exact-listing
+  tests.
+
+## Advanced feature validation
+
+- Offer documents, email analysis, QR/OCR, Gemini response handling, batch
+  processing, scheduler lifecycle and ownership checks have automated
+  regressions. Sensitive offer/email/OCR/QR reports are retained only with
+  explicit user consent.
+- The complete automated suite passed **107 tests** in the final local run.
+  Python compilation, `pip check`, and `git diff --check` passed. Streamlit
+  AppTest loaded the advanced screens and verified multiple batch reports render
+  without duplicate chart IDs.
+- An isolated FastAPI instance returned HTTP 200 for `/health` and
+  `/openapi.json`; registration returned 201, an unauthenticated history
+  request returned 401, and authenticated email/batch/monitoring-status routes
+  returned expected responses. An isolated Streamlit instance returned an
+  HTML page with HTTP 200. Temporary services and their temporary database
+  were stopped/removed without changing the existing port-8000 service.
+- Real TinyFish Search and Fetch smoke tests succeeded in final validation.
+  Fetch of the exact Amazon Careers URL
+  `https://www.amazon.jobs/en/jobs/10477396/software-development-engineer-2026`
+  returned the same final URL, matching title and job ID `10477396`. The page
+  did not establish employer authority or authenticate a separate offer, so
+  the result remains partially verified. Gemini has no configured key and was
+  not live-tested; mocked unavailable/malformed-response tests passed.
+- Local Tesseract extracted text and returned a confidence value. OCR and
+  Gemini interpretations are not proof, and no antivirus, sender-authentication
+  or official-domain ownership service is integrated.
+- The APScheduler service is in-process; run one FastAPI worker to avoid
+  duplicate scheduled checks across multiple worker processes. Checks pause
+  when the application is stopped and are re-registered on startup.
+- Final browser testing used a disposable SQLite database. Website, job,
+  offer-document, email, QR, OCR, batch and saved-report workflows were
+  exercised. The PDF endpoint returned a valid PDF; browser download-event
+  confirmation and complete watchlist controls were not verified in that run.
+  A watchlist API response-validation defect found in the run has since been
+  fixed and covered by regression tests.
+- The actual `.\start.ps1` launcher started FastAPI and Streamlit successfully
+  against a disposable database; both services were then stopped. Health
+  endpoints returned HTTP 200. No cloud deployment was performed.

@@ -90,7 +90,7 @@ try {
         -RedirectStandardError $FrontendErrorLog
     Set-Content -LiteralPath $FrontendPidFile -Value $FrontendProcess.Id -NoNewline
 
-    $deadline = (Get-Date).AddSeconds(45)
+    $deadline = (Get-Date).AddSeconds(90)
     $backendReady = $false
     $frontendReady = $false
 
