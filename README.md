@@ -5,6 +5,29 @@ offer research use TinyFish Search and Fetch. Local deterministic rules provide
 the primary explainable screening; optional Gemini interpretations are
 available when explicitly configured and authorized.
 
+ScamShield helps people review suspicious websites, recruitment offers,
+messages, and payment requests before acting. It is a screening aid, not a
+fraud verdict or a guarantee that a target is safe.
+
+## Architecture
+
+- `frontend/streamlit_app.py` provides the public pages, authenticated
+  workspace, reports, and visualizations. `frontend/api_client.py` handles
+  authenticated API requests.
+- `app/main.py` exposes FastAPI routes, validates input, enforces sessions and
+  ownership, and coordinates provider calls.
+- `app/investigations.py` and `app/evidence.py` build evidence-backed reports
+  and transparent rule-based risk indicators.
+- `app/database.py` persists accounts, sessions, investigations, saved reports,
+  preferences, and watchlists in SQLite.
+- TinyFish Search and Fetch are called by the backend on demand. Optional
+  Gemini interpretation is separate from, and cannot change, the rule-based
+  score.
+
+Typical flow: Streamlit submits an authenticated request to FastAPI; the
+backend validates it, gathers only the requested evidence, applies the
+relevant rules, and persists user-owned report data in SQLite.
+
 ## Windows setup
 
 Open PowerShell in this project folder:
@@ -70,9 +93,9 @@ Set `SCAMSHIELD_DATABASE_PATH` to choose another SQLite file.
 
 ## Features
 
-- Premium white, electric cobalt and acid-lime visual system with a native
-  Streamlit light theme, responsive styling, motion-aware effects, and locally
-  stored original SVG illustrations.
+- Deep-navy cybersecurity theme with electric-blue, cyan, and violet accents;
+  animated aurora, grid, network, radar, and scanning effects; responsive
+  layouts; reduced-motion support; and locally stored SVG illustrations.
 - Public information views for Features, Solutions, How it works, Threat
   Intelligence, Security Methodology, About, FAQ, Contact, Privacy and Terms.
   The privacy/terms copy is informational and not legally reviewed.
@@ -275,7 +298,6 @@ remote redirect destinations cannot be fully controlled by this application.
 Email-based account recovery, voice scam analysis, public community alerts,
 and shareable reports remain unavailable.
 
-The linked YouTube reference was opened, but its player displayed “An error
-occurred. Please try again later.” No video appearance was inferred or copied.
-The current interface follows the project's written white, cobalt-blue and
-acid-lime design direction.
+The interface uses a deep-navy cybersecurity theme with motion-aware visual
+effects. Animations are disabled for the ambient scene when reduced motion is
+requested.

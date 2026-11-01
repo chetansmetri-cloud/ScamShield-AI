@@ -130,7 +130,7 @@ def chart_layout(**overrides: Any) -> dict[str, Any]:
     return {
         "paper_bgcolor": "rgba(0,0,0,0)",
         "plot_bgcolor": "rgba(0,0,0,0)",
-        "font": {"family": "Inter, sans-serif", "color": "#667085", "size": 12},
+        "font": {"family": "Inter, sans-serif", "color": "#a7b3c6", "size": 12},
         "margin": {"l": 8, "r": 8, "t": 24, "b": 8},
         **overrides,
     }
@@ -152,6 +152,56 @@ def render_brand() -> None:
             </svg>
           </div>
           <div><strong>SCAMSHIELD</strong><span>THREAT INTELLIGENCE</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_ambient_scene(kind: str) -> None:
+    scene_class = {
+        "auth": "ambient-scene--auth",
+        "landing": "ambient-scene--landing",
+        "workspace": "ambient-scene--workspace",
+    }.get(kind, "ambient-scene--landing")
+    particle_positions = (
+        (7, 18, 5, 17), (14, 73, 11, 21), (22, 38, 17, 19),
+        (29, 86, 7, 23), (36, 22, 13, 18), (43, 62, 3, 22),
+        (51, 14, 19, 20), (58, 79, 9, 24), (66, 34, 15, 18),
+        (73, 91, 4, 21), (81, 26, 12, 23), (89, 68, 18, 19),
+        (95, 43, 8, 22), (18, 51, 2, 20), (47, 91, 16, 24),
+        (77, 54, 6, 18),
+    )
+    particles = "".join(
+        f'<span class="ambient-particle ambient-particle--field" style="--particle-x:{x}%;--particle-y:{y}%;'
+        f'--particle-delay:-{delay}s;--particle-duration:{duration}s"></span>'
+        for x, y, delay, duration in particle_positions
+    )
+    st.markdown(
+        f"""
+        <div class="ambient-scene {scene_class}" aria-hidden="true">
+          <div class="ambient-aurora"></div>
+          <div class="ambient-energy ambient-energy--one"></div>
+          <div class="ambient-energy ambient-energy--two"></div>
+          <div class="ambient-orb ambient-orb--blue"></div>
+          <div class="ambient-orb ambient-orb--lime"></div>
+          <div class="ambient-ring ambient-ring--one"></div>
+          <div class="ambient-ring ambient-ring--two"></div>
+          <svg class="ambient-network" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice">
+            <path d="M75 170 280 260 460 110 670 250 870 135 1110 270M160 590 350 450 555 650 760 470 980 610 1130 480M280 260 350 450 670 250 760 470 870 135" />
+            <g><circle cx="75" cy="170" r="4"/><circle cx="280" cy="260" r="5"/>
+              <circle cx="460" cy="110" r="4"/><circle cx="670" cy="250" r="5"/>
+              <circle cx="870" cy="135" r="4"/><circle cx="1110" cy="270" r="5"/>
+              <circle cx="160" cy="590" r="4"/><circle cx="350" cy="450" r="5"/>
+              <circle cx="555" cy="650" r="4"/><circle cx="760" cy="470" r="5"/>
+              <circle cx="980" cy="610" r="4"/><circle cx="1130" cy="480" r="4"/>
+            </g>
+          </svg>
+          {particles}
+          <span class="ambient-particle ambient-particle--one"></span>
+          <span class="ambient-particle ambient-particle--two"></span>
+          <span class="ambient-particle ambient-particle--three"></span>
+          <span class="ambient-particle ambient-particle--four"></span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -825,6 +875,23 @@ def render_overview() -> None:
     )
     latest = analytics.get("latest", [])
     total = int(analytics.get("total_investigations", 0))
+    account = st.session_state.get("account", {})
+    display_name = str(account.get("display_name") or account.get("email") or "there")
+    welcome_detail = (
+        f"{total:,} investigation{'s' if total != 1 else ''} in your private workspace."
+        if total
+        else "Your private workspace is ready. Completed investigations will appear here."
+    )
+    st.markdown(
+        f'<section class="dashboard-welcome">'
+        f'<div><div class="eyebrow"><span class="eyebrow-line"></span> SECURITY INTELLIGENCE</div>'
+        f'<h2>Welcome back, {html.escape(display_name)}.</h2>'
+        f'<p>{html.escape(welcome_detail)} Review evidence and risk signals before you act.</p></div>'
+        f'<div class="dashboard-welcome-mark" aria-hidden="true">'
+        f'<div class="dashboard-radar"></div><span>SS</span></div>'
+        f'</section>',
+        unsafe_allow_html=True,
+    )
     metric_columns = st.columns(4, gap="medium")
     with metric_columns[0]:
         render_metric("Total investigations", f"{total:,}", "All saved reports", "01", "#2457FF")
@@ -846,17 +913,17 @@ def render_overview() -> None:
                     x=[item["date"] for item in activity],
                     y=[item["count"] for item in activity],
                     mode="lines+markers",
-                    line={"color": "#2457FF", "width": 3, "shape": "spline"},
-                    marker={"size": 7, "color": "#C7F000"},
+                    line={"color": "#4c8dff", "width": 3, "shape": "spline"},
+                    marker={"size": 7, "color": "#42e8d1"},
                     fill="tozeroy",
-                    fillcolor="rgba(36,87,255,.08)",
+                    fillcolor="rgba(76,141,255,.13)",
                     name="Investigations",
                     hovertemplate="%{x}<br>%{y} investigations<extra></extra>",
                 ))
                 figure.update_layout(**chart_layout(
                     height=290,
-                    xaxis={"showgrid": False, "color": "#667085"},
-                    yaxis={"gridcolor": "#E5E7EB", "color": "#667085", "rangemode": "tozero"},
+                    xaxis={"showgrid": False, "color": "#9aa9bd"},
+                    yaxis={"gridcolor": "rgba(159,178,205,.12)", "color": "#9aa9bd", "rangemode": "tozero"},
                 ))
                 st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
             else:
@@ -869,14 +936,14 @@ def render_overview() -> None:
                     labels=[item["category"] for item in scored_categories],
                     values=[item["count"] for item in scored_categories],
                     hole=0.72,
-                    marker={"colors":[risk_color(item["category"]) for item in scored_categories], "line":{"color":"#FFFFFF","width":4}},
+                    marker={"colors":[risk_color(item["category"]) for item in scored_categories], "line":{"color":"#111b2b","width":4}},
                     textinfo="none",
                     hovertemplate="%{label}<br>%{value} reports · %{percent}<extra></extra>",
                 ))
                 figure.add_annotation(
                     text=f"<b>{total}</b><br><span style='font-size:11px'>reports</span>",
                     x=0.5, y=0.5, showarrow=False,
-                    font={"size": 24, "color": "#101828"},
+                    font={"size": 24, "color": "#f2f6ff"},
                 )
                 figure.update_layout(**chart_layout(height=240, showlegend=False))
                 st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
@@ -2061,6 +2128,7 @@ def render_public_navigation() -> str:
 
 
 def render_landing() -> None:
+    render_ambient_scene("landing")
     healthy, _ = service_status()
     status_text = "API ONLINE" if healthy else "API OFFLINE"
     status_class = "online" if healthy else "offline"
@@ -2084,12 +2152,13 @@ def render_landing() -> None:
           <div class="hero-glow"></div>
           <div class="hero-copy">
             <div class="eyebrow"><span class="eyebrow-line"></span> TRUST, VERIFIED WITH EVIDENCE</div>
-            <h1>See the signal.<br><span>Before you take the risk.</span></h1>
+            <h1>Your Digital World.<br><span>Protected by Intelligence.</span></h1>
             <p>Investigate suspicious websites, job offers and payment requests with live web evidence and transparent risk signals.</p>
             <div class="hero-note"><span class="status-dot online"></span> TinyFish research on demand &nbsp;·&nbsp; Rule-based analysis &nbsp;·&nbsp; Human-reviewed</div>
           </div>
           <div class="hero-visual" aria-hidden="true">
             <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
+            <div class="hero-radar"></div>
             <div class="shield-core"><div class="shield-inner">S</div></div>
             <div class="signal-card signal-top"><span>WEB SIGNAL</span><b>Search on request</b><i>SEARCH · FETCH</i></div>
             <div class="signal-card signal-bottom"><span>RISK MODEL</span><b>Transparent by design</b><i>HUMAN REVIEW</i></div>
@@ -2190,6 +2259,7 @@ def render_landing() -> None:
 
 
 def render_public_page(page: str) -> None:
+    render_ambient_scene("landing")
     healthy, service = service_status()
     st.markdown(
         '<div class="landing-nav"><div class="brand-lockup landing-brand">'
@@ -2328,7 +2398,7 @@ def render_public_page(page: str) -> None:
             st.session_state["public_page"] = "Home"
             st.rerun()
 def render_auth_portal() -> None:
-    render_topbar("Secure account access", "Create a private workspace or sign in to your existing account.")
+    render_ambient_scene("auth")
     modes = ["Sign in", "Create account"]
     st.session_state.setdefault("auth_mode", "Sign in")
     mode = st.radio(
@@ -2338,26 +2408,113 @@ def render_auth_portal() -> None:
         label_visibility="collapsed",
         key="auth_mode",
     )
-    with st.container(border=True):
-        with st.form("account-access-form"):
-            email = st.text_input("Email", max_chars=254, autocomplete="email")
-            display_name = ""
-            if mode == "Create account":
-                display_name = st.text_input("Display name", max_chars=80, autocomplete="name")
+    intro_title = "Your next decision deserves better evidence."
+    intro_copy = (
+        "Review public sources, inspect exact job listings, and understand warning "
+        "signals before you act."
+    )
+    if mode == "Create account":
+        intro_title = "Build a safer place to investigate."
+        intro_copy = (
+            "Create a private workspace for evidence-led website, job, message, "
+            "and offer reviews."
+        )
+    st.markdown(
+        f"""
+        <section class="auth-welcome">
+          <div class="auth-welcome-copy">
+            <span class="eyebrow"><span class="eyebrow-line"></span> SCAMSHIELD AI · PRIVATE WORKSPACE</span>
+            <h1>{html.escape(intro_title)}</h1>
+            <p>{html.escape(intro_copy)}</p>
+            <div class="auth-proof-row">
+              <span><b>01</b> Source-backed research</span>
+              <span><b>02</b> Explainable signals</span>
+              <span><b>03</b> Human-reviewed decisions</span>
+            </div>
+          </div>
+          <div class="auth-shield" aria-hidden="true">
+            <div class="auth-shield-ring auth-shield-ring--outer"></div>
+            <div class="auth-shield-ring auth-shield-ring--inner"></div>
+            <div class="auth-shield-radar"></div>
+            <div class="auth-shield-core"><span>S</span></div>
+            <i class="auth-node auth-node--a"></i><i class="auth-node auth-node--b"></i>
+          </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="auth-form-heading"><div class="eyebrow">SECURE ACCOUNT ACCESS</div>'
+        f'<h2>{"Create your account" if mode == "Create account" else "Welcome back"}</h2>'
+        f'<p>{"Your private workspace starts here." if mode == "Create account" else "Sign in to continue to your investigations."}</p></div>',
+        unsafe_allow_html=True,
+    )
+    with st.container(border=True, key="auth-form-panel"):
+        display_name = ""
+        confirm_password = ""
+        if mode == "Create account":
+            email = st.text_input(
+                "Email",
+                max_chars=254,
+                autocomplete="email",
+                key="register_email",
+            )
+            display_name = st.text_input(
+                "Display name",
+                max_chars=80,
+                autocomplete="name",
+                key="register_display_name",
+            )
             password = st.text_input(
                 "Password",
                 type="password",
                 max_chars=128,
-                help="Use at least 12 characters." if mode == "Create account" else None,
-                autocomplete="new-password" if mode == "Create account" else "current-password",
+                help="Use at least 12 characters.",
+                autocomplete="new-password",
+                key="register_password",
             )
-            submitted = st.form_submit_button(
-                "Create secure account" if mode == "Create account" else "Sign in",
+            confirm_password = st.text_input(
+                "Confirm password",
+                type="password",
+                max_chars=128,
+                autocomplete="new-password",
+                key="register_password_confirm",
+            )
+            strength = sum(
+                (
+                    len(password) >= 12,
+                    any(char.isalpha() for char in password),
+                    any(char.isdigit() for char in password),
+                    any(not char.isalnum() for char in password),
+                )
+            )
+            strength_label = ("Not started", "Weak", "Fair", "Good", "Strong")[strength]
+            st.progress(strength / 4, text=f"Password strength: {strength_label}")
+            st.caption("Aim for 12+ characters, with a mix of letters, numbers, and symbols.")
+            submitted = st.button(
+                "Create account",
                 type="primary",
                 width="stretch",
+                key="register_submit",
             )
+        else:
+            with st.form("account-access-form"):
+                email = st.text_input("Email", max_chars=254, autocomplete="email")
+                password = st.text_input(
+                    "Password",
+                    type="password",
+                    max_chars=128,
+                    autocomplete="current-password",
+                )
+                submitted = st.form_submit_button(
+                    "Sign in securely",
+                    type="primary",
+                    width="stretch",
+                )
         if submitted:
-            if mode == "Create account" and len(password) < 12:
+            if mode == "Create account" and password != confirm_password:
+                st.error("Passwords do not match.")
+            elif mode == "Create account" and len(password) < 12:
                 st.error("Use a password with at least 12 characters.")
             elif mode == "Create account" and not display_name.strip():
                 st.error("Enter a display name.")
@@ -2366,7 +2523,12 @@ def render_auth_portal() -> None:
                 payload = {"email": email, "password": password}
                 if mode == "Create account":
                     payload["display_name"] = display_name
-                result = api_call("POST", route, json=payload)
+                with st.spinner(
+                    "Creating your secure workspace..."
+                    if mode == "Create account"
+                    else "Signing in..."
+                ):
+                    result = api_call("POST", route, json=payload)
                 if result:
                     clear_active_report()
                     st.session_state["auth_token"] = result["access_token"]
@@ -2393,6 +2555,7 @@ def render_auth_portal() -> None:
 
 
 def main() -> None:
+    render_ambient_scene("workspace")
     selected = render_sidebar()
     if selected in {"Overview", "Analytics"}:
         render_overview()

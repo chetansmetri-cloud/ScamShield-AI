@@ -1,12 +1,12 @@
 [theme]
-base = "light"
-primaryColor = "#2457FF"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F3F5F9"
-textColor = "#101828"
+base = "dark"
+primaryColor = "#4C8DFF"
+backgroundColor = "#080D17"
+secondaryBackgroundColor = "#111A29"
+textColor = "#F2F6FF"
 font = "sans-serif"
 headingFont = "sans-serif"
-chartCategoricalColors = ["#2457FF", "#C7F000", "#667085", "#A9BAFF", "#101828"]
+chartCategoricalColors = ["#4C8DFF", "#42E8D1", "#8B7CFF", "#FFB454", "#9AA9BD"]
 showWidgetBorder = true
 baseRadius = "0.65rem"
 buttonRadius = "0.65rem"

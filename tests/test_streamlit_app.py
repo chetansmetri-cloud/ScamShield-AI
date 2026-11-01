@@ -16,6 +16,21 @@ class FakeResponse:
 
 
 class StreamlitSessionIsolationTests(unittest.TestCase):
+    def test_landing_includes_animated_cyber_scene_and_requested_heading(self) -> None:
+        app_path = Path(__file__).resolve().parents[1] / "frontend" / "streamlit_app.py"
+        app = AppTest.from_file(str(app_path), default_timeout=30)
+
+        with patch("httpx.get", return_value=FakeResponse()):
+            app.run()
+
+        self.assertEqual(len(app.exception), 0)
+        markup = "\n".join(element.value for element in app.markdown)
+        self.assertIn("Your Digital World.", markup)
+        self.assertIn("Protected by Intelligence.", markup)
+        self.assertIn("ambient-aurora", markup)
+        self.assertIn("ambient-particle--field", markup)
+        self.assertIn("hero-radar", markup)
+
     def test_auth_portal_initializes_radio_state_without_exception(self) -> None:
         app_path = Path(__file__).resolve().parents[1] / "frontend" / "streamlit_app.py"
         app = AppTest.from_file(str(app_path), default_timeout=30)
@@ -27,6 +42,42 @@ class StreamlitSessionIsolationTests(unittest.TestCase):
 
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(app.session_state["auth_mode"], "Sign in")
+
+    def test_create_account_screen_has_confirmation_and_password_requirements(self) -> None:
+        app_path = Path(__file__).resolve().parents[1] / "frontend" / "streamlit_app.py"
+        app = AppTest.from_file(str(app_path), default_timeout=30)
+
+        with patch("httpx.get", return_value=FakeResponse()):
+            with patch("httpx.request", return_value=FakeResponse()):
+                app.session_state["show_auth_portal"] = True
+                app.session_state["auth_mode"] = "Create account"
+                app.run()
+
+        self.assertEqual(len(app.exception), 0)
+        input_labels = {element.label for element in app.text_input}
+        self.assertIn("Display name", input_labels)
+        self.assertIn("Confirm password", input_labels)
+        self.assertTrue(any("12+ characters" in item.value for item in app.caption))
+
+    def test_overview_greets_authenticated_user(self) -> None:
+        app_path = Path(__file__).resolve().parents[1] / "frontend" / "streamlit_app.py"
+        app = AppTest.from_file(str(app_path), default_timeout=30)
+
+        with patch("httpx.get", return_value=FakeResponse()):
+            with patch("httpx.request", return_value=FakeResponse()):
+                app.session_state["auth_token"] = "test-session"
+                app.session_state["account"] = {
+                    "id": "test-user",
+                    "display_name": "Test Analyst",
+                    "role": "user",
+                }
+                app.session_state["main_navigation"] = "Overview"
+                app.run()
+
+        self.assertEqual(len(app.exception), 0)
+        self.assertTrue(
+            any("Welcome back, Test Analyst." in element.value for element in app.markdown)
+        )
 
     def test_sign_out_clears_previous_users_job_report(self) -> None:
         app_path = Path(__file__).resolve().parents[1] / "frontend" / "streamlit_app.py"

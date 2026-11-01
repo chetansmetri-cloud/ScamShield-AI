@@ -38,7 +38,7 @@ Optional provider availability and live checks are stated separately.
 | Security | Password hashing, hashed sessions, role enforcement, parameterized SQL, API input constraints | Implemented and tested | Covered in current backend tests. |
 | Security | Initial-target SSRF validation | Implemented and tested | Rejects non-HTTP(S), credentialed, local and non-global IP destinations after DNS resolution. Remote TinyFish redirect destinations cannot be prevalidated or guaranteed by this app. |
 | Security | Upload validation and in-memory file processing | Implemented and tested | 8 MB size cap, extension/content checks, 20-megapixel cap, PDF page cap, OCR timeout, and attachment-ignore behavior. Malware scanning and audit-log history are not implemented. |
-| UI | White/cobalt/lime design and new advanced workspace screens | Implemented and AppTest-checked | Streamlit AppTest covers authentication and workspace; no comprehensive mobile-browser or accessibility test matrix. |
+| UI | Deep-navy cybersecurity theme, animated ambient effects, responsive workspace | Implemented and browser/AppTest-checked | Landing, authentication, dashboard, website/message/job investigations, watchlist, settings and analytics were browser-checked. Document-level horizontal overflow was absent at 1440, 1366, 768 and 390 px; reduced motion stopped ambient-scene animations. This is not a full assistive-technology audit. |
 
 ## Phase 1 audit notes
 
@@ -111,7 +111,7 @@ Optional provider availability and live checks are stated separately.
   processing, scheduler lifecycle and ownership checks have automated
   regressions. Sensitive offer/email/OCR/QR reports are retained only with
   explicit user consent.
-- The complete automated suite passed **107 tests** in the final local run.
+- The complete automated suite passed **110 tests** in the final local run.
   Python compilation, `pip check`, and `git diff --check` passed. Streamlit
   AppTest loaded the advanced screens and verified multiple batch reports render
   without duplicate chart IDs.
@@ -143,3 +143,23 @@ Optional provider availability and live checks are stated separately.
 - The actual `.\start.ps1` launcher started FastAPI and Streamlit successfully
   against a disposable database; both services were then stopped. Health
   endpoints returned HTTP 200. No cloud deployment was performed.
+
+## Final verification
+
+- The current environment's full test suite passed **110 tests**. Python
+  compilation, `pip check`, and `git diff --check` passed.
+- Both already-running local services responded successfully: FastAPI
+  `/health` and the Streamlit page returned HTTP 200.
+- Live TinyFish Search returned 9 Microsoft-careers results. TinyFish Fetch
+  successfully returned the Microsoft homepage. An in-app live website scan
+  displayed fetched content and attributed search/fetch evidence.
+- An in-app live check of Amazon job `10477396` fetched the submitted
+  `amazon.jobs` URL and reported matching company, role, and job ID details.
+  The result remained **Partially verified** because the domain and employer
+  authority were not independently authenticated.
+- Browser/API checks covered registration, sign-in/out, a rule-based message
+  report, watchlist persistence, profile update, user analytics, saved-report
+  persistence, unauthenticated access denial, and cross-user read/delete
+  isolation. Disposable test accounts and their data were removed.
+- Gemini was not configured and was not live-tested. No production deployment
+  was performed.
