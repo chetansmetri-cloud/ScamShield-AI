@@ -2,16 +2,52 @@ import os
 import socket
 import tempfile
 import unittest
+from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, patch
 
 import httpx
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.main import app
-from app.main import get_current_user
+from app.main import _configured_allowed_hosts, app, get_current_user
 from app.analyzers.rules import analyze_text, classify_score
 from app.database import InvestigationStore
 from app.reporting import build_pdf_report
+
+
+class AllowedHostConfigurationTests(unittest.TestCase):
+    def test_missing_configuration_uses_defaults(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _configured_allowed_hosts(),
+                ["localhost", "127.0.0.1", "::1", "testserver"],
+            )
+
+    def test_custom_configuration_is_trimmed_and_empty_entries_discarded(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"SCAMSHIELD_ALLOWED_HOSTS": " api.example.test, , dashboard.example.test  "},
+            clear=True,
+        ):
+            self.assertEqual(
+                _configured_allowed_hosts(),
+                ["api.example.test", "dashboard.example.test"],
+            )
+
+    def test_empty_configuration_fails_closed(self) -> None:
+        for value in ("", "   ", ", , "):
+            with self.subTest(value=value):
+                with patch.dict(
+                    os.environ,
+                    {"SCAMSHIELD_ALLOWED_HOSTS": value},
+                    clear=True,
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "SCAMSHIELD_ALLOWED_HOSTS must contain at least one hostname",
+                    ):
+                        _configured_allowed_hosts()
 
 
 class FakeAsyncClient:
@@ -26,10 +62,11 @@ class FakeAsyncClient:
     async def __aexit__(self, *_: object) -> None:
         return None
 
-    async def request(self, *args: object, **kwargs: object) -> httpx.Response:
+    @asynccontextmanager
+    async def stream(self, *args: object, **kwargs: object):
         self.request_args = args
         self.request_kwargs = kwargs
-        return self.response
+        yield self.response
 
 
 class TinyFishRouteTests(unittest.TestCase):
@@ -46,6 +83,9 @@ class TinyFishRouteTests(unittest.TestCase):
         self.key_patch = patch("app.main.dotenv_values", return_value={"TINYFISH_API_KEY": "test-key"})
         self.key_patch.start()
         self.addCleanup(self.key_patch.stop)
+        self.environment_key_patch = patch.dict(os.environ, {"TINYFISH_API_KEY": "test-key"})
+        self.environment_key_patch.start()
+        self.addCleanup(self.environment_key_patch.stop)
 
     def test_search_uses_official_get_format_and_api_key_header(self) -> None:
         fake_client = FakeAsyncClient(
@@ -91,7 +131,10 @@ class TinyFishRouteTests(unittest.TestCase):
                     "Content-Type": "application/json",
                 },
                 "params": None,
-                "json": {"urls": ["https://example.com/"]},
+                "json": {
+                    "urls": ["https://example.com/"],
+                    "per_url_timeout_ms": 20000,
+                },
             },
         )
 
@@ -105,7 +148,8 @@ class TinyFishRouteTests(unittest.TestCase):
 
     def test_missing_api_key_returns_explicit_error(self) -> None:
         with patch("app.main.dotenv_values", return_value={}):
-            response = self.client.get("/api/search", params={"query": "scam"})
+            with patch.dict(os.environ, {"TINYFISH_API_KEY": ""}):
+                response = self.client.get("/api/search", params={"query": "scam"})
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(
@@ -538,6 +582,154 @@ class TinyFishRouteTests(unittest.TestCase):
 
         self.assertNotIn("private detail", str(context.exception))
 
+    def test_malformed_port_and_url_parser_bypasses_are_rejected(self) -> None:
+        from app.main import validate_external_url
+
+        for value in (
+            "https://example.com:bad/",
+            "https://example.com\\@127.0.0.1/",
+            "https://example.com\n@127.0.0.1/",
+            "http://[fe80::1%25eth0]/",
+            "https://" + "a" * 2049 + ".com/",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(HTTPException) as context:
+                    validate_external_url(value)
+                self.assertEqual(context.exception.status_code, 422)
+
+    def test_non_global_ipv4_ipv6_and_mapped_addresses_are_rejected(self) -> None:
+        from app.main import validate_external_url
+
+        for value in (
+            "http://10.0.0.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://192.168.1.1/",
+            "http://100.64.0.1/",
+            "http://[::]/",
+            "http://[::1]/",
+            "http://[fe80::1]/",
+            "http://[::ffff:127.0.0.1]/",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(HTTPException):
+                    validate_external_url(value)
+
+    def test_dns_rejects_mixed_public_and_private_answers(self) -> None:
+        from app.main import validate_external_url
+
+        public_address = (2, 1, 6, "", ("93.184.216.34", 443))
+        private_address = (2, 1, 6, "", ("10.0.0.8", 443))
+        with patch(
+            "app.main.socket.getaddrinfo",
+            return_value=[public_address, private_address],
+        ):
+            with self.assertRaises(HTTPException) as context:
+                validate_external_url("https://mixed.example/")
+        self.assertEqual(context.exception.status_code, 422)
+
+    def test_fetch_discards_private_redirect_destinations(self) -> None:
+        fake_client = FakeAsyncClient(
+            response=httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "url": "https://example.com/",
+                            "final_url": "http://169.254.169.254/latest/meta-data/",
+                            "title": "Untrusted redirect",
+                            "text": "must not be returned",
+                        }
+                    ],
+                    "errors": [],
+                },
+            )
+        )
+        public_address = (2, 1, 6, "", ("93.184.216.34", 443))
+        with patch("app.main.socket.getaddrinfo", return_value=[public_address]):
+            with patch("app.main.httpx.AsyncClient", return_value=fake_client):
+                response = self.client.post(
+                    "/api/fetch",
+                    json={"urls": ["https://example.com"]},
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["results"], [])
+        self.assertEqual(response.json()["errors"][0]["error"], "invalid_redirect_url")
+        self.assertNotIn("must not be returned", response.text)
+
+    def test_fetch_discards_provider_results_for_unrequested_urls(self) -> None:
+        fake_client = FakeAsyncClient(
+            response=httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "url": "https://other.example/",
+                            "final_url": "https://other.example/",
+                            "text": "unrequested response content",
+                        }
+                    ],
+                    "errors": [],
+                },
+            )
+        )
+        public_address = (2, 1, 6, "", ("93.184.216.34", 443))
+        with patch("app.main.socket.getaddrinfo", return_value=[public_address]):
+            with patch("app.main.httpx.AsyncClient", return_value=fake_client):
+                response = self.client.post(
+                    "/api/fetch",
+                    json={"urls": ["https://example.com"]},
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["results"], [])
+        self.assertEqual(response.json()["errors"][0]["error"], "invalid_url")
+        self.assertNotIn("unrequested response content", response.text)
+
+    def test_fetch_rejects_malformed_provider_result_entries(self) -> None:
+        fake_client = FakeAsyncClient(
+            response=httpx.Response(
+                200,
+                json={"results": [None], "errors": []},
+            )
+        )
+        public_address = (2, 1, 6, "", ("93.184.216.34", 443))
+        with patch("app.main.socket.getaddrinfo", return_value=[public_address]):
+            with patch("app.main.httpx.AsyncClient", return_value=fake_client):
+                response = self.client.post(
+                    "/api/fetch",
+                    json={"urls": ["https://example.com"]},
+                )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.json()["detail"],
+            "TinyFish returned an invalid response.",
+        )
+
+    def test_tinyfish_response_size_is_limited(self) -> None:
+        fake_client = FakeAsyncClient(
+            response=httpx.Response(
+                200,
+                content=b"x" * (5 * 1024 * 1024 + 1),
+            )
+        )
+        with patch("app.main.httpx.AsyncClient", return_value=fake_client):
+            response = self.client.get("/api/search", params={"query": "scam"})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("size limit", response.json()["detail"])
+
+    def test_runtime_tinyfish_key_overrides_env_file_value(self) -> None:
+        fake_client = FakeAsyncClient(
+            response=httpx.Response(200, json={"results": []})
+        )
+        with patch("app.main.dotenv_values", return_value={"TINYFISH_API_KEY": "file-key"}):
+            with patch.dict(os.environ, {"TINYFISH_API_KEY": "runtime-key"}):
+                with patch("app.main.httpx.AsyncClient", return_value=fake_client):
+                    response = self.client.get("/api/search", params={"query": "scam"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            fake_client.request_kwargs["headers"]["X-API-Key"],
+            "runtime-key",
+        )
+
 
 class AuthRouteTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -749,6 +941,42 @@ class AuthRouteTests(unittest.TestCase):
             "Request input is invalid. Check the provided fields.",
         )
         self.assertNotIn(password, response.text)
+
+    def test_registration_is_rate_limited_per_client_address(self) -> None:
+        for index in range(5):
+            response = self.client.post(
+                "/api/auth/register",
+                json={
+                    "email": f"limited-{index}@example.test",
+                    "display_name": "Analyst",
+                    "password": "a-strong-password-123",
+                },
+            )
+            self.assertEqual(response.status_code, 201)
+        limited = self.client.post(
+            "/api/auth/register",
+            json={
+                "email": "limited-extra@example.test",
+                "display_name": "Analyst",
+                "password": "a-strong-password-123",
+            },
+        )
+        self.assertEqual(limited.status_code, 429)
+        self.assertEqual(limited.headers["Retry-After"], "3600")
+
+    def test_registration_limiter_serializes_concurrent_attempts(self) -> None:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            outcomes = list(
+                executor.map(
+                    self.store.allow_registration_attempt,
+                    ["192.0.2.10"] * 12,
+                )
+            )
+        self.assertEqual(sum(outcomes), 5)
+
+    def test_untrusted_host_header_is_rejected(self) -> None:
+        response = self.client.get("/health", headers={"Host": "attacker.example"})
+        self.assertEqual(response.status_code, 400)
 
     def test_password_change_revokes_old_sessions(self) -> None:
         account = self.register()

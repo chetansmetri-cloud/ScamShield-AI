@@ -130,6 +130,10 @@ class InvestigationStore:
                     email TEXT NOT NULL,
                     attempted_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS registration_attempts (
+                    source_hash TEXT NOT NULL,
+                    attempted_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS rate_limit_events (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -142,6 +146,8 @@ class InvestigationStore:
                     ON auth_sessions(user_id);
                 CREATE INDEX IF NOT EXISTS idx_login_attempts
                     ON login_attempts(email, attempted_at);
+                CREATE INDEX IF NOT EXISTS idx_registration_attempts
+                    ON registration_attempts(source_hash, attempted_at);
                 CREATE INDEX IF NOT EXISTS idx_monitor_checks_owner
                     ON watchlist_monitor_checks(user_id, checked_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_monitor_alerts_owner
@@ -413,6 +419,33 @@ class InvestigationStore:
                 return None
             connection.execute("DELETE FROM login_attempts WHERE email = ?", (normalized_email,))
             return self._public_user(row)
+
+    def allow_registration_attempt(
+        self,
+        source_address: str,
+        *,
+        limit: int = 5,
+        window_minutes: int = 60,
+    ) -> bool:
+        source_hash = hashlib.sha256(source_address.encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(minutes=window_minutes)).isoformat()
+        with self._connection() as connection:
+            connection.execute(
+                "DELETE FROM registration_attempts WHERE attempted_at < ?",
+                (cutoff,),
+            )
+            attempts = connection.execute(
+                "SELECT COUNT(*) FROM registration_attempts WHERE source_hash = ? AND attempted_at >= ?",
+                (source_hash, cutoff),
+            ).fetchone()[0]
+            if attempts >= limit:
+                return False
+            connection.execute(
+                "INSERT INTO registration_attempts (source_hash, attempted_at) VALUES (?, ?)",
+                (source_hash, now.isoformat()),
+            )
+        return True
 
     def create_session(self, user_id: str, *, hours: int = 12) -> str:
         token = secrets.token_urlsafe(32)

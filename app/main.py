@@ -1,3 +1,4 @@
+import asyncio
 import ipaddress
 import json
 import logging
@@ -21,6 +22,7 @@ from pydantic import ConfigDict, StrictInt, ValidationError
 from pydantic import BaseModel, Field, HttpUrl
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.analyzers.rules import analyze_text, classify_score
 from app.database import InvestigationStore
@@ -56,7 +58,29 @@ logger = logging.getLogger(__name__)
 SEARCH_API_URL = "https://api.search.tinyfish.ai"
 FETCH_API_URL = "https://api.fetch.tinyfish.ai"
 REQUEST_TIMEOUT_SECONDS = 30.0
+MAX_PROVIDER_RESPONSE_BYTES = 5 * 1024 * 1024
+TINYFISH_PER_URL_TIMEOUT_MS = 20_000
 MAX_FETCH_URLS = 10
+DEFAULT_ALLOWED_HOSTS = "localhost,127.0.0.1,::1,testserver"
+
+
+def _configured_allowed_hosts() -> list[str]:
+    configured_hosts = os.getenv("SCAMSHIELD_ALLOWED_HOSTS")
+    hosts = [
+        host.strip()
+        for host in (
+            configured_hosts
+            if configured_hosts is not None
+            else DEFAULT_ALLOWED_HOSTS
+        ).split(",")
+        if host.strip()
+    ]
+    if not hosts:
+        raise RuntimeError(
+            "SCAMSHIELD_ALLOWED_HOSTS must contain at least one hostname."
+        )
+    return hosts
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
@@ -68,6 +92,8 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(title="ScamShield AI API", version="0.2.0", lifespan=lifespan)
+allowed_hosts = _configured_allowed_hosts()
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 store = InvestigationStore(
     os.getenv(
         "SCAMSHIELD_DATABASE_PATH",
@@ -175,8 +201,15 @@ class PublicIntelligenceRequest(BaseModel):
     consent_to_public_search: bool = False
 
 
+def _configured_tinyfish_key() -> str:
+    return (
+        os.getenv("TINYFISH_API_KEY")
+        or str(dotenv_values(ENV_FILE).get("TINYFISH_API_KEY") or "")
+    ).strip()
+
+
 def _api_key() -> str:
-    key = str(dotenv_values(ENV_FILE).get("TINYFISH_API_KEY") or "").strip()
+    key = _configured_tinyfish_key()
     if not key:
         raise HTTPException(
             status_code=503,
@@ -187,16 +220,31 @@ def _api_key() -> str:
 
 def validate_external_url(url: HttpUrl | str) -> str:
     value = str(url)
-    parsed = urlsplit(value)
     if (
-        parsed.scheme.lower() not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
+        not value
+        or len(value) > 2048
+        or "\\" in value
+        or any(ord(character) <= 0x20 or ord(character) == 0x7F for character in value)
     ):
         raise HTTPException(status_code=422, detail="Only public HTTP(S) URLs are allowed.")
 
-    host = parsed.hostname.rstrip(".").lower()
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except (UnicodeError, ValueError):
+        raise HTTPException(status_code=422, detail="Only public HTTP(S) URLs are allowed.") from None
+
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "%" in hostname
+    ):
+        raise HTTPException(status_code=422, detail="Only public HTTP(S) URLs are allowed.")
+
+    host = hostname.rstrip(".").lower()
     if host == "localhost" or host.endswith((".localhost", ".local", ".internal")):
         raise HTTPException(status_code=422, detail="Local network URLs cannot be fetched.")
 
@@ -207,10 +255,10 @@ def validate_external_url(url: HttpUrl | str) -> str:
             default_port = 80 if parsed.scheme.lower() == "http" else 443
             resolved = socket.getaddrinfo(
                 host,
-                parsed.port or default_port,
+                port or default_port,
                 type=socket.SOCK_STREAM,
             )
-        except socket.gaierror:
+        except (OSError, OverflowError, UnicodeError, ValueError):
             raise HTTPException(
                 status_code=422,
                 detail="The URL hostname could not be verified as publicly reachable.",
@@ -221,7 +269,13 @@ def validate_external_url(url: HttpUrl | str) -> str:
                 detail="The URL hostname could not be verified as publicly reachable.",
             )
         for result in resolved:
-            resolved_address = ipaddress.ip_address(result[4][0].split("%", 1)[0])
+            try:
+                resolved_address = ipaddress.ip_address(result[4][0].split("%", 1)[0])
+            except (IndexError, TypeError, ValueError):
+                raise HTTPException(
+                    status_code=422,
+                    detail="The URL hostname could not be verified as publicly reachable.",
+                ) from None
             if not resolved_address.is_global:
                 raise HTTPException(
                     status_code=422,
@@ -235,6 +289,42 @@ def validate_external_url(url: HttpUrl | str) -> str:
             )
 
     return value
+
+
+async def _stream_tinyfish_response(
+    method: str,
+    endpoint: str,
+    *,
+    headers: dict[str, str],
+    params: dict[str, str] | None,
+    json_body: dict[str, Any] | None,
+) -> tuple[int, bytes]:
+    timeout = httpx.Timeout(
+        REQUEST_TIMEOUT_SECONDS,
+        connect=5.0,
+        read=20.0,
+        write=10.0,
+        pool=5.0,
+    )
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        async with client.stream(
+            method,
+            endpoint,
+            headers=headers,
+            params=params,
+            json=json_body,
+        ) as response:
+            if not response.is_success:
+                return response.status_code, b""
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > MAX_PROVIDER_RESPONSE_BYTES:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="TinyFish returned a response that exceeded the size limit.",
+                    )
+            return response.status_code, bytes(body)
 
 
 async def tinyfish_request(
@@ -261,15 +351,17 @@ async def tinyfish_request(
         headers["Content-Type"] = "application/json"
 
     try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
-            response = await client.request(
+        status_code, response_body = await asyncio.wait_for(
+            _stream_tinyfish_response(
                 method,
                 endpoint,
                 headers=headers,
                 params=params,
-                json=json_body,
-            )
-    except httpx.TimeoutException as exc:
+                json_body=json_body,
+            ),
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
         logger.warning(
             "provider=TinyFish operation=%s request_status=timeout response_status=none duration_ms=%d result_count=0",
             operation,
@@ -285,8 +377,8 @@ async def tinyfish_request(
         )
         raise HTTPException(status_code=502, detail="Unable to reach TinyFish.") from exc
 
-    if not response.is_success:
-        if response.status_code == 429:
+    if not 200 <= status_code < 300:
+        if status_code == 429:
             logger.warning(
                 "provider=TinyFish operation=%s request_status=rate_limited response_status=429 duration_ms=%d result_count=0",
                 operation,
@@ -299,21 +391,21 @@ async def tinyfish_request(
         logger.warning(
             "provider=TinyFish operation=%s request_status=failed response_status=%d duration_ms=%d result_count=0",
             operation,
-            response.status_code,
+            status_code,
             round((time.perf_counter() - started_at) * 1000),
         )
         raise HTTPException(
             status_code=502,
-            detail=f"TinyFish request failed with HTTP {response.status_code}.",
+            detail=f"TinyFish request failed with HTTP {status_code}.",
         )
 
     try:
-        payload = response.json()
+        payload = json.loads(response_body)
     except ValueError as exc:
         logger.warning(
             "provider=TinyFish operation=%s request_status=invalid_response response_status=%d duration_ms=%d result_count=0",
             operation,
-            response.status_code,
+            status_code,
             round((time.perf_counter() - started_at) * 1000),
         )
         raise HTTPException(status_code=502, detail="TinyFish returned an invalid response.") from exc
@@ -322,7 +414,7 @@ async def tinyfish_request(
         logger.warning(
             "provider=TinyFish operation=%s request_status=invalid_response response_status=%d duration_ms=%d result_count=0",
             operation,
-            response.status_code,
+            status_code,
             round((time.perf_counter() - started_at) * 1000),
         )
         raise HTTPException(status_code=502, detail="TinyFish returned an invalid response.")
@@ -334,19 +426,20 @@ async def tinyfish_request(
         logger.warning(
             "provider=TinyFish operation=%s request_status=invalid_response response_status=%d duration_ms=%d result_count=0",
             operation,
-            response.status_code,
+            status_code,
             round((time.perf_counter() - started_at) * 1000),
         )
         raise HTTPException(status_code=502, detail="TinyFish returned an invalid response.")
     result_count = len(results) if isinstance(results, list) else 0
     error_count = len(errors) if isinstance(errors, list) else 0
     logger.info(
-        "provider=TinyFish operation=%s request_status=completed response_status=%d duration_ms=%d result_count=%d provider_error_count=%d",
+        "provider=TinyFish operation=%s request_status=completed response_status=%d duration_ms=%d result_count=%d provider_error_count=%d response_bytes=%d",
         operation,
-        response.status_code,
+        status_code,
         round((time.perf_counter() - started_at) * 1000),
         result_count,
         error_count,
+        len(response_body),
     )
     return payload
 
@@ -357,11 +450,38 @@ async def search_web(query: str) -> dict[str, Any]:
 
 async def fetch_pages(urls: list[str]) -> dict[str, Any]:
     safe_urls = [validate_external_url(url) for url in urls]
-    return await tinyfish_request(
+    payload = await tinyfish_request(
         "POST",
         FETCH_API_URL,
-        json_body={"urls": safe_urls},
+        json_body={
+            "urls": safe_urls,
+            "per_url_timeout_ms": TINYFISH_PER_URL_TIMEOUT_MS,
+        },
     )
+    allowed_urls = {canonicalize_url(url) for url in safe_urls}
+    safe_results: list[dict[str, Any]] = []
+    errors = list(payload.get("errors", [])) if isinstance(payload.get("errors"), list) else []
+    for result in payload.get("results", []):
+        if not isinstance(result, dict):
+            logger.warning("provider=TinyFish operation=fetch request_status=invalid_result")
+            raise HTTPException(status_code=502, detail="TinyFish returned an invalid response.")
+        requested_url = str(result.get("url") or "")
+        canonical_requested_url = canonicalize_url(requested_url)
+        if not requested_url or canonical_requested_url not in allowed_urls:
+            errors.append({"url": requested_url, "error": "invalid_url"})
+            continue
+        final_url = str(result.get("final_url") or requested_url)
+        try:
+            validated_final_url = validate_external_url(final_url)
+        except HTTPException:
+            errors.append({"url": requested_url, "error": "invalid_redirect_url"})
+            continue
+        safe_result = dict(result)
+        safe_result["final_url"] = validated_final_url
+        safe_results.append(safe_result)
+    payload["results"] = safe_results
+    payload["errors"] = errors
+    return payload
 
 
 monitoring_service = WatchlistMonitoring(
@@ -447,7 +567,14 @@ def _valid_email(value: str) -> bool:
 
 
 @app.post("/api/auth/register", status_code=201)
-async def register(request: RegisterRequest) -> dict[str, Any]:
+async def register(request: RegisterRequest, http_request: Request) -> dict[str, Any]:
+    source_address = http_request.client.host if http_request.client else "unknown"
+    if not store.allow_registration_attempt(source_address):
+        raise HTTPException(
+            status_code=429,
+            detail="Registration attempts are temporarily limited. Try again later.",
+            headers={"Retry-After": "3600"},
+        )
     if not _valid_email(request.email):
         raise HTTPException(status_code=422, detail="Enter a valid email address.")
     try:
@@ -524,7 +651,7 @@ async def delete_history_item(
 
 @app.get("/api/integrations")
 async def integrations(_: dict[str, str] = Depends(get_current_user)) -> dict[str, Any]:
-    configured = bool(str(dotenv_values(ENV_FILE).get("TINYFISH_API_KEY") or "").strip())
+    configured = bool(_configured_tinyfish_key())
     tesseract_cmd = os.getenv("TESSERACT_CMD", "").strip() or shutil.which("tesseract")
     if not tesseract_cmd and os.name == "nt":
         default_tesseract = r"C:\Program Files\Tesseract-OCR\tesseract.exe"

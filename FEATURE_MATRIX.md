@@ -9,7 +9,7 @@ Optional provider availability and live checks are stated separately.
 | Accounts | Registration, login, logout, scrypt password hashes, 12-hour hashed sessions, profile/password change, account deletion | Implemented and tested | Backend tests cover auth, revocation, account ownership and server-side admin role checks. Public signup always creates a regular user; an operator must provision administrator roles directly in SQLite. |
 | Accounts | Session listing/revocation UI, password reset and email verification | Not implemented | No session-management routes or configured email delivery workflow. |
 | Authorization | Account-scoped investigations, saved reports, watchlist and deletion | Implemented and tested | Backend tests verify cross-account isolation and ownership checks. |
-| Abuse controls | Sign-in attempt limit | Partially implemented | Limit is per email over 15 minutes; no general API or source-IP rate limiter. |
+| Abuse controls | Sign-in and registration limits | Implemented with reverse-proxy caveat | Login is limited per email over 15 minutes; registration is limited to five attempts per observed client address per hour. Configure proxy-level rate limits, especially behind shared reverse proxies. No general per-user API limiter beyond batch submissions. |
 | Investigations | Website URL checks using TinyFish Search and Fetch | Implemented and tested | Mocked API tests cover request formats and errors. Live smoke checks in the current environment returned Search results and fetched Microsoft, Amazon India, and Google homepages; live availability is not guaranteed. |
 | Job verification | Job-specific Search query, exact submitted-offer URL Fetch, structured listing extraction | Implemented and tested | Mocked tests cover exact URL/final URL, title, company, job ID, description/application fields, mismatch states, generic search isolation, and provider errors. A live Amazon Careers URL matched its final URL, title, and job ID; employer authority remains unverified. |
 | Job verification | Redirected careers-page handling | Implemented and tested | Known platform hosts and same-domain-family redirects can be checked for listing-detail consistency. A live Google Careers URL redirected to `www.google.com`, but returned a generic search page with no role details; that listing remained insufficiently verified. Redirects never establish employer authority. |
@@ -36,7 +36,7 @@ Optional provider availability and live checks are stated separately.
 | Dashboard | Watchlist manual management and visual history/timeline/evidence graph | Implemented and tested | User-owned watchlist entries and investigation history are isolated by account. |
 | Monitoring | Opt-in scheduled watchlist checks and in-app alerts | Implemented and tested | APScheduler runs in-process, settings/check history are stored in SQLite, and lifecycle and owner access are tested. Checks pause while the API is stopped; no email alerts are sent. |
 | Security | Password hashing, hashed sessions, role enforcement, parameterized SQL, API input constraints | Implemented and tested | Covered in current backend tests. |
-| Security | Initial-target SSRF validation | Implemented and tested | Rejects non-HTTP(S), credentialed, local and non-global IP destinations after DNS resolution. Remote TinyFish redirect destinations cannot be prevalidated or guaranteed by this app. |
+| Security | SSRF input validation and provider response bounds | Defense in depth; residual remote-fetch risk | Rejects malformed URLs and non-public DNS/IP targets; streamed TinyFish responses are capped at 5 MiB and 30 seconds; returned final URLs are revalidated. TinyFish performs remote fetches, so the app cannot prevalidate every redirect hop or pin provider-side DNS. See `SECURITY.md`. |
 | Security | Upload validation and in-memory file processing | Implemented and tested | 8 MB size cap, extension/content checks, 20-megapixel cap, PDF page cap, OCR timeout, and attachment-ignore behavior. Malware scanning and audit-log history are not implemented. |
 | UI | Deep-navy cybersecurity theme, animated ambient effects, responsive workspace | Implemented and browser/AppTest-checked | Landing, authentication, dashboard, website/message/job investigations, watchlist, settings and analytics were browser-checked. Document-level horizontal overflow was absent at 1440, 1366, 768 and 390 px; reduced motion stopped ambient-scene animations. This is not a full assistive-technology audit. |
 
@@ -111,7 +111,7 @@ Optional provider availability and live checks are stated separately.
   processing, scheduler lifecycle and ownership checks have automated
   regressions. Sensitive offer/email/OCR/QR reports are retained only with
   explicit user consent.
-- The complete automated suite passed **110 tests** in the final local run.
+- The complete automated suite passed **121 tests** in the latest local run.
   Python compilation, `pip check`, and `git diff --check` passed. Streamlit
   AppTest loaded the advanced screens and verified multiple batch reports render
   without duplicate chart IDs.
@@ -146,13 +146,15 @@ Optional provider availability and live checks are stated separately.
 
 ## Final verification
 
-- The current environment's full test suite passed **110 tests**. Python
+- The current environment's full test suite passed **121 tests**. Python
   compilation, `pip check`, and `git diff --check` passed.
-- Both already-running local services responded successfully: FastAPI
-  `/health` and the Streamlit page returned HTTP 200.
-- Live TinyFish Search returned 9 Microsoft-careers results. TinyFish Fetch
-  successfully returned the Microsoft homepage. An in-app live website scan
-  displayed fetched content and attributed search/fetch evidence.
+- FastAPI `/health` and the Streamlit page returned HTTP 200 when started
+  against a disposable SQLite database. The temporary services and database
+  were stopped and removed.
+- Current live TinyFish Search returned 2 results, and TinyFish Fetch
+  successfully fetched `https://example.com/` with final URL
+  `https://example.com`. Earlier live Microsoft and Amazon checks remain
+  separate validation runs; they are not results from this smoke test.
 - An in-app live check of Amazon job `10477396` fetched the submitted
   `amazon.jobs` URL and reported matching company, role, and job ID details.
   The result remained **Partially verified** because the domain and employer
@@ -161,5 +163,9 @@ Optional provider availability and live checks are stated separately.
   report, watchlist persistence, profile update, user analytics, saved-report
   persistence, unauthenticated access denial, and cross-user read/delete
   isolation. Disposable test accounts and their data were removed.
+- Admin browser access was not verified: no legitimate admin account was
+  available in the local database and no browser page was shared. Automated
+  route tests cover administrator authorization and regular-user denial; no
+  synthetic admin account was created for the browser.
 - Gemini was not configured and was not live-tested. No production deployment
   was performed.

@@ -84,12 +84,14 @@ Run tests:
 python -m unittest discover -s tests -v
 ```
 
-Deployment guidance: [DEPLOYMENT.md](./DEPLOYMENT.md). User workflows:
-[USER_GUIDE.md](./USER_GUIDE.md).
+Deployment guidance: [DEPLOYMENT.md](./DEPLOYMENT.md). Security notes:
+[SECURITY.md](./SECURITY.md). User workflows: [USER_GUIDE.md](./USER_GUIDE.md).
 
 The backend listens at `http://127.0.0.1:8000`; the dashboard is normally at
 `http://localhost:8501`. Set `SCAMSHIELD_API_URL` if the backend is elsewhere.
 Set `SCAMSHIELD_DATABASE_PATH` to choose another SQLite file.
+For non-local hosting, configure `SCAMSHIELD_ALLOWED_HOSTS` with the API's
+exact hostnames; the default is restricted to local development hosts.
 
 ## Features
 

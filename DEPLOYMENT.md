@@ -22,6 +22,7 @@ source control:
 | `TINYFISH_API_KEY` | For live web research | TinyFish Search and Fetch authentication |
 | `SCAMSHIELD_DATABASE_PATH` | Recommended | Path on a persistent mounted volume |
 | `SCAMSHIELD_API_URL` | For a separately hosted UI | FastAPI base URL used by Streamlit |
+| `SCAMSHIELD_ALLOWED_HOSTS` | Required outside local development | Comma-separated exact hostnames accepted by FastAPI; default is local development hosts only |
 | `GEMINI_API_KEY` | Optional | Enables consent-based Gemini interpretation |
 | `GEMINI_MODEL` | Optional | Gemini model name |
 | `TESSERACT_CMD` | Optional | Tesseract executable path when not on `PATH` |
@@ -61,6 +62,11 @@ Mount the persistent volume at the database location and set
 ingress at a trusted reverse proxy/platform layer; do not expose FastAPI's
 administrative docs publicly unless protected. Configure health checks against
 `/health`. Keep FastAPI at one replica while monitoring is in-process.
+Set `SCAMSHIELD_ALLOWED_HOSTS` to the exact API hostname(s), separated by
+commas; do not use `*` in production. Enforce request-rate limits at the public
+proxy too, especially when users share an upstream proxy address. Do not trust
+forwarded client-address headers unless the proxy is explicitly configured as
+trusted.
 
 These are deployment instructions, not evidence that a cloud deployment has
 been performed. Validate HTTPS, backups, restore procedures, allowed origins,
@@ -75,8 +81,9 @@ resource sizing, and provider limits in the target environment before launch.
 - Email verification, password recovery, MFA, antivirus scanning, and email
   delivery are not configured.
 - TinyFish performs remote Fetch and may follow redirects outside the app's
-  control. URL/DNS validation does not eliminate remote SSRF or DNS-rebinding
-  risk; only submit URLs you are authorized to investigate.
+  control. The app validates initial and returned final URLs, but cannot
+  pre-approve every provider redirect hop or pin the provider's DNS resolution;
+  residual SSRF and DNS-rebinding risks remain. See [SECURITY.md](./SECURITY.md).
 - A successful job page fetch does not prove employer authority or offer
   authenticity. Gemini is optional and its interpretations do not change the
   rule-based score.
